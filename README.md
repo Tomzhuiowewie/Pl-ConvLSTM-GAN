@@ -10,7 +10,10 @@
 
 ## 卫星降雨数据(2021)
 
-./data/cmorph-2021
+源数据：./data/cmorph-2021/hourly
+
+代码：cmorph_process.py
+
 
 ## 土地利用数据
 

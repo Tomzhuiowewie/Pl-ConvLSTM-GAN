@@ -13,20 +13,7 @@ DEM_PATH = Path("data/dem/dem30.tif")
 RAINFALL_PATH = Path('data/climate/降水.xlsx')
 LUCC_BASE_DIR = Path('data/lucc')
 CMORPH_BASE_DIR = Path('data/cmorph-2021')
-
-def load_cmorph(year: str = '2021', date: str = '0101', hour: str = '00'):
-    cmorph_path = CMORPH_BASE_DIR / f"CMORPH_V1.0_ADJ_0.25deg-HLY_{year}{date}{hour}.nc"
-    if not cmorph_path.exists():
-        raise FileNotFoundError(f"CMORPH directory not found: {cmorph_path}")
     
-    ds = xr.open_dataset(cmorph_path)
-    print(ds)
-    print('\nVariables:', list(ds.data_vars))
-    print('\nCoords:', ds.coords)
-    
-    
-    
-
 
 def load_rainfall_data():
     """Load rainfall data from Excel file."""
@@ -178,15 +165,5 @@ if __name__ == "__main__":
     # plt.show()
 
     # Load and display 2021 LUCC data
-    # try:
-    #     lucc, lucc_transform, lucc_crs, lucc_profile = load_lucc(2021)
-    #     print_lucc_summary(lucc, lucc_transform, lucc_crs, lucc_profile)
-    # except Exception as e:
-    #     print(f"Warning: Could not load LUCC data: {e}")
-    
-    # Load and display CMORPH data
-    try:
-        cmorph, cmorph_transform, cmorph_crs, cmorph_profile = load_cmorph(2021)
-        print_cmorph_summary(cmorph, cmorph_transform, cmorph_crs, cmorph_profile)
-    except Exception as e:
-        print(f"Warning: Could not load CMORPH data: {e}")
+    lucc, lucc_transform, lucc_crs, lucc_profile = load_lucc(2021)
+    print_lucc_summary(lucc, lucc_transform, lucc_crs, lucc_profile)
