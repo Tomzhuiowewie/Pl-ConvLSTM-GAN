@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
+from pathlib import Path
 
 # --------------------------- ConvLSTMCell ------------------------------------
 # ConvLSTM单元格实现，结合了CNN的空间特征提取能力和LSTM的时间序列建模能力
@@ -44,12 +45,8 @@ class ConvLSTMCell(nn.Module):
 class ConvLSTM(nn.Module):
     def __init__(self, input_dim, hidden_dims, kernel_size=3):
         super().__init__()
-        self.cells = nn.ModuleList()  # 存储每一层的ConvLSTMCell
-        in_ch = input_dim
-        # 逐层创建ConvLSTMCell
-        for hdim in hidden_dims:
-            self.cells.append(ConvLSTMCell(in_ch, hdim, kernel_size))
-            in_ch = hdim  # 上一层的输出作为下一层的输入
+        self.cells = nn.ModuleList([ConvLSTMCell(input_dim if i==0 else hidden_dims[i-1], h, kernel_size) 
+                                   for i, h in enumerate(hidden_dims)])
 
     def forward(self, input_seq):
         # input_seq: (B, T, C, H, W) 格式，其中B=批次大小，T=时间步长，C=通道数，H=高度，W=宽度
@@ -77,7 +74,7 @@ class DEMAttention(nn.Module):
     """
     对 ConvLSTM 输出特征进行 DEM 注意力加权
     """
-    def __init__(self, in_channels, dem_channels):
+    def __init__(self, in_channels, dem_channels=1):
         super().__init__()
         # 使用 1x1 卷积提取 DEM 注意力权重
         self.conv1 = nn.Conv2d(dem_channels, in_channels, kernel_size=1)
@@ -89,14 +86,14 @@ class DEMAttention(nn.Module):
         dem: (B, dem_channels, H, W) DEM 高程图
         """
         attn = self.sigmoid(self.conv1(dem))  # (B, C, H, W)
-        return features * attn  # 特征加权
+        return features * attn  # 特征加权 
 
 # --------------------------- LU Attention Module ----------------------------
 class LUAttention(nn.Module):
     """
     对 ConvLSTM 输出特征进行土地利用(LU)注意力加权
     """
-    def __init__(self, in_channels, lu_channels):
+    def __init__(self, in_channels, lu_channels=1):
         super().__init__()
         self.conv1 = nn.Conv2d(lu_channels, in_channels, kernel_size=1)
         self.sigmoid = nn.Sigmoid()
