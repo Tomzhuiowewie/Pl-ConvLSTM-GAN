@@ -5,7 +5,7 @@ import numpy as np
 class FenheSuperResDataset(Dataset):
     def __init__(self, precip_path, dem_path, lucc_path, seq_len=5):
         """
-        precip_path: 25km 降水数据 (.npy), 形状 (T, H_lr, W_lr) -> (365, 15, 12)
+        precip_path: 25km 降水数据 (.npy), 形状 (T, H_lr, W_lr) -> (365, 15, 12)                
         dem_path: 1km DEM 数据 (.npy), 形状 (H_hr, W_hr) -> (458, 306)
         lucc_path: 1km LUCC 数据 (.npy), 形状 (H_hr, W_hr) -> (458, 306)
         """
@@ -15,6 +15,11 @@ class FenheSuperResDataset(Dataset):
         # 2. 静态特征标准化优化
         dem_raw = np.load(dem_path).astype(np.float32)
         lucc_raw = np.load(lucc_path).astype(np.float32)
+
+        # 查看所有唯一的分类编号
+        unique_classes = np.unique(lucc_raw)
+        print(f"分类列表: {unique_classes}")
+        print(f"分类总数: {len(unique_classes)}")
         
         # 使用更稳健的 Min-Max 标准化：基于处理后的实际最大值 (2716.0m)
         dem_min = dem_raw.min()
@@ -53,7 +58,15 @@ class FenheSuperResDataset(Dataset):
         
         return x_precip_tensor, self.static_features
 
-# --- 优化说明 ---
-# 1. 内存效率: static_features 在初始化时就转为 Tensor，getitem 仅返回引用，极大加快训练速度。
-# 2. 鲁棒性: 使用 np.nan_to_num 彻底隔离 NaN 对卷积网络的影响。
-# 3. 灵活性: seq_len 设为参数，方便后期调整时间步长（如用 3 天预测或 7 天预测）。
+
+
+if __name__ == "__main__":
+    dataset = FenheSuperResDataset(
+        "data/cmorph-2021/daily/fenhe_hydro_08-08_2021.npy",
+        "data/static_features_1km/dem_1km.npy",
+        "data/static_features_1km/lucc_1km.npy",
+        seq_len=5
+    )
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+    for batch in dataloader:
+        print(batch[0].shape, batch[1].shape)

@@ -37,9 +37,17 @@ def process_static_features_to_1km(dem_path, lucc_path, out_dir):
     dem_final = dem_1km.compute()
     lucc_final = lucc_1km.compute()
 
+    # --- 最终清理 (确保万无一失) ---
+    dem_vals = dem_final.values.astype(np.float32)
+    dem_vals[dem_vals > 9000] = 0  # 再次检查海拔异常
+
+    lucc_vals = lucc_final.values.astype(np.uint8)
+    lucc_vals[lucc_vals == 255] = 0 # 彻底干掉 255
+
+    # 5. 保存
     # 确保数据类型正确 (DEM 为浮点，LUCC 为整数)
-    np.save(out_dir / "dem_1km.npy", dem_final.values.astype(np.float32))
-    np.save(out_dir / "lucc_1km.npy", lucc_final.values.astype(np.uint8))
+    np.save(out_dir / "dem_1km.npy", dem_vals)
+    np.save(out_dir / "lucc_1km.npy", lucc_vals)
     
     # 坐标保存逻辑保持不变
     lon = dem_final.x.values if 'x' in dem_final.coords else dem_final.lon.values
@@ -48,8 +56,8 @@ def process_static_features_to_1km(dem_path, lucc_path, out_dir):
     np.save(out_dir / "lats_1km.npy", lat)
 
     print(f"--- 处理完成 ---")
-    print(f"DEM 形状: {dem_final.shape}, 最大海拔: {dem_final.max().item():.1f}m")
-    print(f"LUCC 形状: {lucc_final.shape}, 分类数: {len(np.unique(lucc_final))}")
+    print(f"DEM 形状: {dem_vals.shape}, 最大海拔: {dem_vals.max().item():.1f}m")
+    print(f"LUCC 形状: {lucc_vals.shape}, 分类数: {len(np.unique(lucc_vals))}")
 
 if __name__ == "__main__":
     config = {
