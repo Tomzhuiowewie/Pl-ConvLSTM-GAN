@@ -6,7 +6,7 @@ import regionmask
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-def process_cmorph_to_fenhe(nc_dir, shp_path, out_base_path, year="2021"):
+def process_cmorph_to_fenhe(nc_dir, shp_path, out_base_path, year="2021", save=True):
     """
     整合后的降水数据处理流程
     """
@@ -55,40 +55,44 @@ def process_cmorph_to_fenhe(nc_dir, shp_path, out_base_path, year="2021"):
     # 北京 20:00 = UTC 12:00。需将 UTC 12:00 偏移至当日 00:00
     daily_cma = masked_precip.shift(time=-12).resample(time="1D").sum(min_count=24)
 
-    # 4. 导出数据
-    results = {
-        "hydro_08-08": daily_hydro,
-        "cma_20-20": daily_cma
-    }
+    if save:
+        # 4. 导出数据
+        results = {
+            "hydro_08-08": daily_hydro,
+            "cma_20-20": daily_cma
+        }
 
-    for name, ds_res in results.items():
-        # 保存 NPY
-        npy_path = out_base_path / f"fenhe_{name}_{year}.npy"
-        np.save(npy_path, ds_res.values)
+        for name, ds_res in results.items():
+            # 保存 NPY
+            npy_path = out_base_path / f"fenhe_{name}_{year}.npy"
+            np.save(npy_path, ds_res.values)
+            
+            # 保存 CSV (清理 NaN)
+            csv_path = out_base_path / f"fenhe_{name}_{year}.csv"
+            df = ds_res.to_dataframe(name="precip").reset_index()
+            df_clean = df.dropna(subset=["precip"])
+            df_clean.to_csv(csv_path, index=False)
+            
+            # 打印检查
+            lon_min, lon_max = df_clean['lon'].min(), df_clean['lon'].max()
+            print(f"[{name}] 导出完成。经度范围: {lon_min:.2f}~{lon_max:.2f}, 保存至: {csv_path.name}")
         
-        # 保存 CSV (清理 NaN)
-        csv_path = out_base_path / f"fenhe_{name}_{year}.csv"
-        df = ds_res.to_dataframe(name="precip").reset_index()
-        df_clean = df.dropna(subset=["precip"])
-        df_clean.to_csv(csv_path, index=False)
-        
-        # 打印检查
-        lon_min, lon_max = df_clean['lon'].min(), df_clean['lon'].max()
-        print(f"[{name}] 导出完成。经度范围: {lon_min:.2f}~{lon_max:.2f}, 保存至: {csv_path.name}")
+
+        # 5. 可视化对比 (7月10日为例)
+        try:
+            fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+            daily_hydro.sel(time=f"{year}-07-10").plot(ax=axes[0], cmap="Blues", vmin=0, vmax=50)
+            axes[0].set_title("Hydrological (08:00-08:00)")
+            
+            daily_cma.sel(time=f"{year}-07-10").plot(ax=axes[1], cmap="Blues", vmin=0, vmax=50)
+            axes[1].set_title("Meteorological (20:00-20:00)")
+            plt.tight_layout()
+            plt.show()
+        except:
+            print("提示：该日期数据不足，跳过绘图。")
     
-
-    # 5. 可视化对比 (7月10日为例)
-    try:
-        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-        daily_hydro.sel(time=f"{year}-07-10").plot(ax=axes[0], cmap="Blues", vmin=0, vmax=50)
-        axes[0].set_title("Hydrological (08:00-08:00)")
-        
-        daily_cma.sel(time=f"{year}-07-10").plot(ax=axes[1], cmap="Blues", vmin=0, vmax=50)
-        axes[1].set_title("Meteorological (20:00-20:00)")
-        plt.tight_layout()
-        plt.show()
-    except:
-        print("提示：该日期数据不足，跳过绘图。")
+    else:
+        return daily_hydro, daily_cma
 
 
 if __name__ == "__main__":
@@ -97,7 +101,8 @@ if __name__ == "__main__":
         "nc_dir": "data/cmorph-2021/hourly",
         "shp_path": "data/FenheBasin/fenhe.shp",
         "out_base_path": "data/cmorph-2021/daily",
-        "year": "2021"
+        "year": "2021",
+        "save": True
     }
 
     process_cmorph_to_fenhe(**config)

@@ -1,169 +1,59 @@
-from pathlib import Path
-from pprint import pprint
-
-import matplotlib.pyplot as plt
+import torch
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
-import pandas as pd
-import xarray as xr
-import rasterio
-from rasterio.errors import RasterioIOError
-from rasterio.plot import plotting_extent
 
-DEM_PATH = Path("data/dem/dem30.tif")
-RAINFALL_PATH = Path('data/climate/降水.xlsx')
-LUCC_BASE_DIR = Path('data/lucc')
-CMORPH_BASE_DIR = Path('data/cmorph-2021')
-    
+class FenheSuperResDataset(Dataset):
+    def __init__(self, precip_path, dem_path, lucc_path, seq_len=5):
+        """
+        precip_path: 25km 降水数据 (.npy), 形状 (T, H_lr, W_lr) -> (365, 15, 12)
+        dem_path: 1km DEM 数据 (.npy), 形状 (H_hr, W_hr) -> (458, 306)
+        lucc_path: 1km LUCC 数据 (.npy), 形状 (H_hr, W_hr) -> (458, 306)
+        """
+        # 1. 加载并直接清理 NaN (我们在预处理脚本中已将背景转为0，这里做双重保险)
+        self.precip = np.nan_to_num(np.load(precip_path).astype(np.float32), nan=0.0)
+        
+        # 2. 静态特征标准化优化
+        dem_raw = np.load(dem_path).astype(np.float32)
+        lucc_raw = np.load(lucc_path).astype(np.float32)
+        
+        # 使用更稳健的 Min-Max 标准化：基于处理后的实际最大值 (2716.0m)
+        dem_min = dem_raw.min()
+        dem_max = dem_raw.max()
+        self.dem = (dem_raw - dem_min) / (dem_max - dem_min + 1e-6)
+        
+        # LUCC 保持原始类别 ID 即可，通常背景已在预处理中设为 0
+        self.lucc = np.nan_to_num(lucc_raw, nan=0.0)
 
-def load_rainfall_data():
-    """Load rainfall data from Excel file."""
-    try:
-        return pd.read_excel(RAINFALL_PATH)
-    except Exception as e:
-        print(f"Warning: Could not load rainfall data: {e}")
-        return None
+        # 3. 组合静态特征 (C, H, W) -> (2, 458, 306)
+        # 提前转为 Tensor 存储在内存中，避免在 __getitem__ 中重复计算
+        static_combined = np.stack([self.dem, self.lucc], axis=0)
+        self.static_features = torch.from_numpy(static_combined).float()
 
+        self.seq_len = seq_len
 
-def load_lucc(year: int = 2021):
-    """Load Fenhe land use raster for a given year (ESRI Grid directory)."""
-    lucc_dir = LUCC_BASE_DIR / f"fenhe_{year}"
-    if not lucc_dir.exists():
-        raise FileNotFoundError(f"LUCC directory not found: {lucc_dir}")
+    def __len__(self):
+        # 确保索引不会越界
+        return len(self.precip) - self.seq_len
 
-    dataset_path_candidates = [lucc_dir, lucc_dir / "w001001.adf", lucc_dir / "hdr.adf"]
+    def __getitem__(self, idx):
+        """
+        返回:
+        - x_precip: (seq_len, 1, 15, 12) -> 低分辨率动态序列
+        - static: (2, 458, 306) -> 高分辨率静态底图
+        """
+        # 提取降水序列
+        x_precip = self.precip[idx : idx + self.seq_len]
+        
+        # 转换为 Tensor: (T, H, W) -> (T, C=1, H, W)
+        # 这里使用 clone() 确保内存连续，避免多进程 DataLoader 报错
+        x_precip_tensor = torch.from_numpy(x_precip).unsqueeze(1).clone()
+        
+        # 如果你有高分辨率的真值降水 (1km)，在这里加载作为 target
+        # y_true = self.precip_hr[idx + self.seq_len - 1] # 预测序列最后一天的精细图
+        
+        return x_precip_tensor, self.static_features
 
-    last_error = None
-    for candidate in dataset_path_candidates:
-        try:
-            ds = rasterio.open(candidate)
-            break
-        except RasterioIOError as exc:
-            last_error = exc
-    else:
-        raise RasterioIOError(
-            f"Could not open LUCC dataset in {lucc_dir}. Last error: {last_error}")
-
-    with ds:
-        array = ds.read(1)
-        transform = ds.transform
-        crs = ds.crs
-        profile = ds.profile
-
-    return array, transform, crs, profile
-
-
-def load_dem(dem_path: Path = DEM_PATH):
-    """Load DEM raster band as float array with nodata masked as NaN."""
-    if not dem_path.exists():
-        raise FileNotFoundError(f"DEM file not found: {dem_path}")
-
-    with rasterio.open(dem_path) as ds:
-        band = ds.read(1).astype(np.float32)
-        nodata = ds.nodata
-        if nodata is not None:
-            band = np.where(band == nodata, np.nan, band)
-        transform = ds.transform
-        crs = ds.crs
-        profile = ds.profile
-
-    return band, transform, crs, profile
-
-
-def plot_dem(dem_array: np.ndarray, transform, crs):
-    """Visualize DEM with terrain colormap and colorbar."""
-    extent = plotting_extent(dem_array, transform)
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    im = ax.imshow(dem_array, cmap="terrain", extent=extent)
-    ax.set_title("Digital Elevation Model")
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.grid(False)
-
-    cbar = fig.colorbar(im, ax=ax, fraction=0.036, pad=0.04)
-    cbar.set_label("Elevation")
-
-    if crs:
-        ax.text(0.01, 0.01, f"CRS: {crs.to_string()}", transform=ax.transAxes,
-                bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
-
-    fig.tight_layout()
-    return fig, ax
-
-
-def print_dem_summary(dem_array: np.ndarray, transform, crs, profile):
-    pixel_width = transform.a
-    pixel_height = abs(transform.e)
-    nodata = profile.get("nodata")
-    driver = profile.get("driver")
-
-    print("\n" + "=" * 60)
-    print("Digital Elevation Model Summary")
-    print("=" * 60)
-    print(f"Dimensions : {dem_array.shape[0]} rows × {dem_array.shape[1]} cols")
-    print(f"Pixel size : {pixel_width:.2f} m × {pixel_height:.2f} m")
-    print(f"NoData     : {nodata}")
-    print(f"Driver     : {driver}")
-    if crs:
-        print("CRS        :", crs)
-    print("Transform  :", transform)
-
-    profile_copy = profile.copy()
-    for key in ("transform", "crs"):
-        profile_copy.pop(key, None)
-
-    print("\nRaster profile (key fields):")
-    pprint(profile_copy, sort_dicts=False, width=80)
-    print("=" * 60 + "\n")
-
-
-def print_lucc_summary(lucc_array: np.ndarray, transform, crs, profile, top_n: int = 10):
-    nodata = profile.get("nodata")
-    pixel_width = transform.a
-    pixel_height = abs(transform.e)
-
-    valid_mask = np.ones(lucc_array.shape, dtype=bool)
-    if nodata is not None:
-        valid_mask &= lucc_array != nodata
-
-    valid_pixels = lucc_array[valid_mask]
-    unique_vals, counts = np.unique(valid_pixels, return_counts=True) if valid_pixels.size else ([], [])
-    sorted_stats = sorted(zip(unique_vals, counts), key=lambda x: x[1], reverse=True)
-
-    total_valid = int(valid_pixels.size)
-    print("\n" + "-" * 60)
-    print("Fenhe Land Use Summary (2021)")
-    print("-" * 60)
-    print(f"Dimensions : {lucc_array.shape[0]} rows × {lucc_array.shape[1]} cols")
-    print(f"Pixel size : {pixel_width:.2f} m × {pixel_height:.2f} m")
-    print(f"NoData     : {nodata}")
-    print(f"CRS        : {crs}")
-    print(f"Transform  : {transform}")
-    print(f"Valid pixels: {total_valid:,}")
-
-    print("\nTop land use classes (value -> pixel count):")
-    if not sorted_stats:
-        print("  (no valid pixels)")
-    else:
-        for value, count in sorted_stats[:top_n]:
-            percent = (count / total_valid * 100) if total_valid else 0.0
-            print(f"  {value:>6}: {count:,} pixels ({percent:.2f}%)")
-    print("-" * 60 + "\n")
-
-
-if __name__ == "__main__":
-    # Load and display rainfall data
-    # rainfall_data = load_rainfall_data()
-    # if rainfall_data is not None:
-    #     print("Rainfall data loaded successfully:")
-    #     print(rainfall_data.head())
-
-    # Load and display DEM data
-    # dem, transform, crs, profile = load_dem()
-    # print_dem_summary(dem, transform, crs, profile)
-    # fig, ax = plot_dem(dem, transform, crs)
-    # plt.show()
-
-    # Load and display 2021 LUCC data
-    lucc, lucc_transform, lucc_crs, lucc_profile = load_lucc(2021)
-    print_lucc_summary(lucc, lucc_transform, lucc_crs, lucc_profile)
+# --- 优化说明 ---
+# 1. 内存效率: static_features 在初始化时就转为 Tensor，getitem 仅返回引用，极大加快训练速度。
+# 2. 鲁棒性: 使用 np.nan_to_num 彻底隔离 NaN 对卷积网络的影响。
+# 3. 灵活性: seq_len 设为参数，方便后期调整时间步长（如用 3 天预测或 7 天预测）。
