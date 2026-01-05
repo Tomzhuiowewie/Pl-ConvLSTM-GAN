@@ -2,64 +2,61 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
-from pathlib import Path
-import os
-import random
+import pandas as pd
 import matplotlib.pyplot as plt
 
-# --------------------------- 1. 注意力增强模块 ------------------------------------
+# --------------------------- 1. CoordConv 辅助函数 ------------------------------
+def add_coord_channels(x):
+    """
+    在输入特征图中加入标准化行列坐标 (CoordConv)
+    x: (B, C, H, W)
+    返回: (B, C+2, H, W)
+    """
+    B, C, H, W = x.shape
+    device = x.device
 
+    row_coords = torch.linspace(0, 1, H, device=device).unsqueeze(1).repeat(1, W)
+    col_coords = torch.linspace(0, 1, W, device=device).unsqueeze(0).repeat(H, 1)
+    row_coords = row_coords.unsqueeze(0).unsqueeze(0).repeat(B,1,1,1)
+    col_coords = col_coords.unsqueeze(0).unsqueeze(0).repeat(B,1,1,1)
+
+    return torch.cat([x, row_coords, col_coords], dim=1)
+
+# --------------------------- 2. 注意力增强模块 -----------------------------------
 class DEMAttention(nn.Module):
-    """
-    DEM Attention: Uses elevation info to generate spatial weights for precipitation.
-    地形注意力模块：利用高程信息生成空间权重。
-    """
     def __init__(self, in_channels, dem_channels=1):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(dem_channels, in_channels // 2, kernel_size=3, padding=1),
+            nn.Conv2d(dem_channels, in_channels//2, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels // 2, in_channels, kernel_size=1),
+            nn.Conv2d(in_channels//2, in_channels, kernel_size=1),
             nn.Sigmoid()
         )
-
     def forward(self, x, dem):
         attn = self.conv(dem)
         return x * attn
 
 class LUAttention(nn.Module):
-    """
-    LU Attention: Provides differentiated feature weighting based on land use types.
-    土地利用注意力模块：根据下垫面类型提供特征加权。
-    """
     def __init__(self, in_channels, lu_channels=1):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(lu_channels, in_channels // 2, kernel_size=3, padding=1),
+            nn.Conv2d(lu_channels, in_channels//2, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels // 2, in_channels, kernel_size=1),
+            nn.Conv2d(in_channels//2, in_channels, kernel_size=1),
             nn.Sigmoid()
         )
-
     def forward(self, x, lu):
         attn = self.conv(lu)
         return x * attn
 
-# --------------------------- 2. ConvLSTM 核心组件 ---------------------------------
-
+# --------------------------- 3. ConvLSTM 核心组件 --------------------------------
 class ConvLSTMCell(nn.Module):
     def __init__(self, input_dim, hidden_dim, kernel_size=3, bias=True):
         super().__init__()
         padding = kernel_size // 2
         self.hidden_dim = hidden_dim
-        self.conv = nn.Conv2d(in_channels=input_dim + hidden_dim,
-                              out_channels=4 * hidden_dim,
-                              kernel_size=kernel_size,
-                              padding=padding,
-                              bias=bias)
-
+        self.conv = nn.Conv2d(input_dim + hidden_dim, 4 * hidden_dim, kernel_size, padding=padding, bias=bias)
     def forward(self, x, h_cur, c_cur):
         combined = torch.cat([x, h_cur], dim=1)
         conv_out = self.conv(combined)
@@ -69,40 +66,33 @@ class ConvLSTMCell(nn.Module):
         h_next = o * torch.tanh(c_next)
         return h_next, c_next
 
-# --------------------------- 3. 生成器 (Generator) -------------------------------
-
+# --------------------------- 4. 生成器 (Generator) ------------------------------
 class Generator(nn.Module):
-    def __init__(self, in_channels=1, dem_channels=1, lu_channels=1, hidden_dims=[32, 64]):
+    def __init__(self, in_channels=1, dem_channels=1, lu_channels=1, hidden_dims=[32,64]):
         super().__init__()
         self.hidden_dims = hidden_dims
-        self.init_conv = nn.Conv2d(in_channels + dem_channels + lu_channels, hidden_dims[0], kernel_size=3, padding=1)
+        # +2 for CoordConv
+        self.init_conv = nn.Conv2d(in_channels + dem_channels + lu_channels + 2, hidden_dims[0], kernel_size=3, padding=1)
         self.cell1 = ConvLSTMCell(hidden_dims[0], hidden_dims[0])
         self.cell2 = ConvLSTMCell(hidden_dims[0], hidden_dims[1])
         self.dem_attn = DEMAttention(hidden_dims[1], dem_channels)
         self.lu_attn = LUAttention(hidden_dims[1], lu_channels)
         self.post_process = nn.Sequential(
-            nn.Conv2d(hidden_dims[1], 32, kernel_size=3, padding=1),
+            nn.Conv2d(hidden_dims[1], 32, 3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 1, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True) 
+            nn.Conv2d(32, 1, 3, padding=1),
+            nn.ReLU(inplace=True)
         )
-
     def forward(self, rain_lr, dem, lu):
-        B, T, C, H_lr, W_lr = rain_lr.shape
-        _, _, H_hr, W_hr = dem.shape
-        device = rain_lr.device
-        
-        rain_hr_interp = F.interpolate(rain_lr.view(B*T, C, H_lr, W_lr), 
-                                       size=(H_hr, W_hr), mode='bilinear', align_corners=False).view(B, T, C, H_hr, W_hr)
-        
-        h1 = torch.zeros(B, self.hidden_dims[0], H_hr, W_hr, device=device)
+        B, T, C, H, W = rain_lr.shape
+        h1 = torch.zeros(B, self.hidden_dims[0], H, W, device=rain_lr.device)
         c1 = torch.zeros_like(h1)
-        h2 = torch.zeros(B, self.hidden_dims[1], H_hr, W_hr, device=device)
+        h2 = torch.zeros(B, self.hidden_dims[1], H, W, device=rain_lr.device)
         c2 = torch.zeros_like(h2)
-        
         outputs = []
         for t in range(T):
-            x_t = torch.cat([rain_hr_interp[:, t], dem, lu], dim=1)
+            x_t = torch.cat([rain_lr[:,t], dem, lu], dim=1)
+            x_t = add_coord_channels(x_t)
             x_t = F.relu(self.init_conv(x_t))
             h1, c1 = self.cell1(x_t, h1, c1)
             h2, c2 = self.cell2(h1, h2, c2)
@@ -112,191 +102,122 @@ class Generator(nn.Module):
             outputs.append(out_t.unsqueeze(1))
         return torch.cat(outputs, dim=1)
 
-# --------------------------- 4. 判别器 (Discriminator) ---------------------------
-
+# --------------------------- 5. 判别器 (可选，训练时可忽略) -----------------------
 class Discriminator(nn.Module):
     def __init__(self, in_channels=1):
         super().__init__()
         self.main = nn.Sequential(
-            nn.Conv3d(in_channels, 32, kernel_size=3, stride=(1, 2, 2), padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv3d(32, 64, kernel_size=3, stride=(1, 2, 2), padding=1),
+            nn.Conv3d(in_channels, 32, 3, stride=(1,2,2), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Conv3d(32,64,3,stride=(1,2,2),padding=1),
             nn.BatchNorm3d(64),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.AdaptiveAvgPool3d((1, 1, 1)),
+            nn.LeakyReLU(0.2),
+            nn.AdaptiveAvgPool3d((1,1,1)),
             nn.Flatten(),
-            nn.Linear(64, 1),
+            nn.Linear(64,1),
             nn.Sigmoid()
         )
+    def forward(self,x):
+        x = x.permute(0,2,1,3,4)
+        return self.main(x)
 
-    def forward(self, x):
-        x = x.permute(0, 2, 1, 3, 4)
-        return self.main(x).squeeze(1)
-
-# --------------------------- 5. 论文评估指标模块 (Scientific Metrics) -------------
-
-class Metrics:
-    @staticmethod
-    def calculate_rmse(pred, target):
-        return torch.sqrt(F.mse_loss(pred, target))
-
-    @staticmethod
-    def calculate_cc(pred, target):
-        """相关系数 Correlation Coefficient"""
-        p_m = torch.mean(pred)
-        t_m = torch.mean(target)
-        num = torch.sum((pred - p_m) * (target - t_m))
-        den = torch.sqrt(torch.sum((pred - p_m)**2) * torch.sum((target - t_m)**2))
-        return num / (den + 1e-8)
-
-    @staticmethod
-    def calculate_ts(pred, target, threshold=0.1):
-        """Threat Score (CSI) 降水关键指标"""
-        pred_bin = (pred >= threshold).float()
-        target_bin = (target >= threshold).float()
-        hits = torch.sum(pred_bin * target_bin)
-        false_alarms = torch.sum(pred_bin * (1 - target_bin))
-        misses = torch.sum((1 - pred_bin) * target_bin)
-        return hits / (hits + false_alarms + misses + 1e-8)
-
-# --------------------------- 6. 组合损失函数 --------------------------------------
-
+# --------------------------- 6. 组合损失函数 (只保留点位监督) ------------------
 class CombinedLoss(nn.Module):
-    def __init__(self, lambda_gan=1.0, lambda_conserve=10.0, lambda_tv=0.1, lambda_pixel=5.0):
+    def __init__(self, lambda_point=20.0, lambda_conserve=5.0):
         super().__init__()
-        self.lambda_gan = lambda_gan
+        self.lambda_point = lambda_point
         self.lambda_conserve = lambda_conserve
-        self.lambda_tv = lambda_tv
-        self.lambda_pixel = lambda_pixel
-        self.bce = nn.BCELoss()
         self.l1 = nn.L1Loss()
-
-    def tv_loss(self, y):
-        return torch.mean(torch.abs(y[:, :, :, 1:, :] - y[:, :, :, :-1, :])) + \
-               torch.mean(torch.abs(y[:, :, :, :, 1:] - y[:, :, :, :, :-1]))
-
     def conservation_loss(self, pred, lr_input):
-        B, T, C, H_hr, W_hr = pred.shape
-        H_lr, W_lr = lr_input.shape[-2:]
-        pred_lr = F.adaptive_avg_pool2d(pred.view(B*T, C, H_hr, W_hr), (H_lr, W_lr)).view(B, T, C, H_lr, W_lr)
+        B,T,C,H,W = pred.shape
+        H_lr,W_lr = lr_input.shape[-2:]
+        pred_lr = F.adaptive_avg_pool2d(pred.view(B*T,C,H,W),(H_lr,W_lr)).view(B,T,C,H_lr,W_lr)
         return self.l1(pred_lr, lr_input)
+    def point_supervision_loss(self, pred, s_coords, s_values):
+        if s_values is None: return 0.0
+        B,T,_,H,W = pred.shape
+        batch_loss = 0
+        for b in range(B):
+            for t in range(T):
+                rows = s_coords[:,0]
+                cols = s_coords[:,1]
+                pred_at_stations = pred[b,t,0,rows,cols]
+                batch_loss += F.mse_loss(pred_at_stations, s_values[b,t])
+        return batch_loss/(B*T)
+    def forward(self,pred,lr_input,s_coords,s_values):
+        loss_point = self.point_supervision_loss(pred,s_coords,s_values)
+        loss_conserve = self.conservation_loss(pred, lr_input)
+        total_loss = self.lambda_point*loss_point + self.lambda_conserve*loss_conserve
+        return total_loss, {"point":loss_point,"conserve":loss_conserve}
 
-    def forward(self, fake_hr, lr_input, d_fake_score, real_hr=None):
-        loss_gan = self.bce(d_fake_score, torch.ones_like(d_fake_score))
-        loss_conserve = self.conservation_loss(fake_hr, lr_input)
-        loss_tv = self.tv_loss(fake_hr)
-        
-        loss_pixel = 0
-        if real_hr is not None:
-            weight = torch.where(real_hr > 5.0, 2.0, 1.0) 
-            loss_pixel = torch.mean(weight * torch.abs(fake_hr - real_hr))
-        
-        total_loss = (self.lambda_gan * loss_gan + 
-                      self.lambda_conserve * loss_conserve + 
-                      self.lambda_tv * loss_tv + 
-                      self.lambda_pixel * loss_pixel)
-        
-        return total_loss, {"gan": loss_gan, "conserve": loss_conserve, "tv": loss_tv, "pixel": loss_pixel}
-
-# --------------------------- 7. 数据集与增强 --------------------------------------
-
+# --------------------------- 7. 数据集 (只用站点点位) ---------------------------
 class FenheDataset(Dataset):
-    def __init__(self, rain_path, dem_path, lucc_path, T=5, augment=True):
-        self.rain_data = np.load(rain_path)
+    def __init__(self,rain_lr_path,dem_path,lucc_path,meta_path,rain_excel_path,grid_extent,T=5):
+        self.rain_lr = np.load(rain_lr_path)
         self.dem = np.load(dem_path)
         self.lucc = np.load(lucc_path)
         self.T = T
-        self.augment = augment
-        
-        self.rain_data = np.nan_to_num(self.rain_data)
-        self.dem_norm = (self.dem - self.dem.min()) / (self.dem.max() - self.dem.min() + 1e-7)
-        self.lucc_norm = self.lucc / 10.0
-
+        self.grid_extent = grid_extent
+        self.dem_norm = (self.dem - self.dem.min())/(self.dem.max()-self.dem.min()+1e-7)
+        self.lucc_norm = self.lucc/10.0
+        self.s_coords, self.s_values = self._prepare_stations(meta_path,rain_excel_path)
+    def _prepare_stations(self,meta_path,rain_excel_path):
+        df_meta = pd.read_excel(meta_path,usecols=["F_站号","经度","纬度","高程"])
+        df_rain = pd.read_excel(rain_excel_path).query("year==2021").sort_values(["year","month","day"])
+        min_lat,max_lat,min_lon,max_lon = self.grid_extent
+        rows_total,cols_total = self.dem.shape
+        station_coords=[]
+        station_data_list=[]
+        for _,row in df_meta.iterrows():
+            st_id=row["F_站号"]
+            lat,lon=row["纬度"],row["经度"]
+            r_idx=int((max_lat-lat)/(max_lat-min_lat)*(rows_total-1))
+            c_idx=int((lon-min_lon)/(max_lon-min_lon)*(cols_total-1))
+            if 0<=r_idx<rows_total and 0<=c_idx<cols_total:
+                if str(st_id) in df_rain.columns:
+                    station_coords.append([r_idx,c_idx])
+                    station_data_list.append(df_rain[str(st_id)].to_numpy())
+        return np.array(station_coords), np.stack(station_data_list,axis=1)
     def __len__(self):
-        return self.rain_data.shape[0] - self.T
+        return self.rain_lr.shape[0]-self.T
+    def __getitem__(self,idx):
+        x_lr = torch.FloatTensor(self.rain_lr[idx:idx+self.T,np.newaxis,...])
+        dem = torch.FloatTensor(self.dem_norm[np.newaxis,...])
+        lu = torch.FloatTensor(self.lucc_norm[np.newaxis,...])
+        val = torch.FloatTensor(self.s_values[idx:idx+self.T])
+        coord = torch.LongTensor(self.s_coords)
+        return x_lr,dem,lu,coord,val
 
-    def __getitem__(self, idx):
-        x_lr = self.rain_data[idx : idx + self.T, np.newaxis, ...]
-        dem = self.dem_norm[np.newaxis, ...]
-        lu = self.lucc_norm[np.newaxis, ...]
-        
-        if self.augment and random.random() > 0.5:
-            x_lr = np.flip(x_lr, axis=-1).copy()
-            dem = np.flip(dem, axis=-1).copy()
-            lu = np.flip(lu, axis=-1).copy()
-
-        return torch.FloatTensor(x_lr), torch.FloatTensor(dem), torch.FloatTensor(lu)
-
-# --------------------------- 8. 可视化函数 (Visualization) -----------------------
-
-def plot_comparison(lr, hr_pred, dem, save_path="comparison.png"):
-    """
-    绘制对比图：LR输入 vs HR预测 vs DEM地形参考
-    """
-    plt.figure(figsize=(15, 5))
-    plt.subplot(1, 3, 1)
-    plt.title("LR Input (25km)")
-    plt.imshow(lr[0, 0], cmap='YlGnBu')
-    plt.colorbar()
-
-    plt.subplot(1, 3, 2)
-    plt.title("SR Output (1km)")
-    plt.imshow(hr_pred[0, 0], cmap='YlGnBu')
-    plt.colorbar()
-
-    plt.subplot(1, 3, 3)
-    plt.title("DEM Reference")
-    plt.imshow(dem[0], cmap='terrain')
-    plt.colorbar()
-
-    plt.savefig(save_path)
-    plt.close()
-
-# --------------------------- 9. 训练逻辑 ------------------------------------------
-
-def train_model(epochs=30, batch_size=2):
+# --------------------------- 8. 训练逻辑 ---------------------------------------
+def train_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+    fenhe_extent = [35.2,39.1,110.5,113.8]
+
     dataset = FenheDataset(
-        rain_path="data/cmorph-2021/daily/fenhe_hydro_08-08_2021.npy",
-        dem_path="data/static_features_1km/dem_1km.npy",
-        lucc_path="data/static_features_1km/lucc_1km.npy",
-        augment=True
+        rain_lr_path="data/cmorph_lr.npy",
+        dem_path="data/dem_1km.npy",
+        lucc_path="data/lucc_1km.npy",
+        meta_path="data/climate/meta.xlsx",
+        rain_excel_path="data/climate/rain.xlsx",
+        grid_extent=fenhe_extent
     )
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-    G = Generator(hidden_dims=[16, 32]).to(device)
-    D = Discriminator().to(device)
-    g_optimizer = torch.optim.Adam(G.parameters(), lr=0.0002)
-    d_optimizer = torch.optim.Adam(D.parameters(), lr=0.0001)
-    
+    dataloader = DataLoader(dataset,batch_size=2,shuffle=True)
+    G = Generator(hidden_dims=[16,32]).to(device)
+    optimizer = torch.optim.Adam(G.parameters(),lr=0.0002)
     loss_module = CombinedLoss()
-    criterion_bce = nn.BCELoss()
+    for epoch in range(50):
+        for i,(lr,dem,lu,s_coords,s_values) in enumerate(dataloader):
+            lr,dem,lu = lr.to(device),dem.to(device),lu.to(device)
+            s_values,s_coords = s_values.to(device),s_coords[0]
+            optimizer.zero_grad()
+            fake_hr = G(lr,dem,lu)
+            loss,loss_dict = loss_module(fake_hr,lr,s_coords,s_values)
+            loss.backward()
+            optimizer.step()
+            if i%10==0:
+                print(f"Epoch {epoch} | Loss: {loss:.4f} | Point: {loss_dict['point']:.4f} | Conserve: {loss_dict['conserve']:.4f}")
+    torch.save(G.state_dict(),"generator_coordconv.pth")
+    print("训练完成，模型已保存！")
 
-    for epoch in range(epochs):
-        for i, (rain_lr, dem, lu) in enumerate(dataloader):
-            rain_lr, dem, lu = rain_lr.to(device), dem.to(device), lu.to(device)
-            
-            # Train D
-            d_optimizer.zero_grad()
-            fake_hr = G(rain_lr, dem, lu).detach()
-            d_loss = criterion_bce(D(fake_hr), torch.zeros((rain_lr.size(0), 1), device=device))
-            d_loss.backward()
-            d_optimizer.step()
-
-            # Train G
-            g_optimizer.zero_grad()
-            current_fake_hr = G(rain_lr, dem, lu)
-            g_loss, loss_dict = loss_module(current_fake_hr, rain_lr, D(current_fake_hr))
-            g_loss.backward()
-            g_optimizer.step()
-
-            if i == 0: # 每个Epoch保存第一张对比图
-                plot_comparison(rain_lr[0, 0].cpu().numpy(), current_fake_hr[0, 0].detach().cpu().numpy(), dem[0, 0].cpu().numpy(), f"epoch_{epoch}.png")
-                
-        print(f"Epoch {epoch} finished.")
-
-    torch.save(G.state_dict(), "generator_final.pth")
-
-if __name__ == "__main__":
+if __name__=="__main__":
     train_model()
