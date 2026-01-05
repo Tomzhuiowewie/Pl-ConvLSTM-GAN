@@ -7,7 +7,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import rasterio
 import geopandas as gpd
-import torch.nn.functional as F
 
 
 # --------------------------- 1. CoordConv 辅助函数 ------------------------------

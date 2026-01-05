@@ -1,9 +1,11 @@
-# Pl-ConvLSTM-GAN: 基于ConvLSTM和GAN的汾河流域降水超分辨率重建
+# 汾河流域降水超分辨率重建
 
 ## 项目概述
+
 本项目实现了一种基于卷积长短期记忆网络（ConvLSTM）和生成对抗网络（GAN）的深度学习模型，用于将低分辨率卫星降水数据（CMORPH）超分辨率重建为高分辨率降水分布。通过融合高程数据（DEM）和土地利用数据（LUCC）作为静态特征，显著提升了重建精度。该模型特别针对汾河流域设计，能够有效捕捉降水的时空变化特征。
 
 ## 项目特色
+
 - **时空建模**: 使用ConvLSTM网络捕捉降水数据的时空相关性
 - **多源特征融合**: 集成高程、土地利用等地理特征增强重建效果
 - **坐标感知**: 采用CoordConv机制提高空间感知能力
@@ -13,20 +15,18 @@
 ## 核心架构
 
 ### 生成器 (Generator)
+
 生成器负责将低分辨率降水数据转换为高分辨率降水分布：
+
 - **ConvLSTM单元**: 捕捉时空依赖关系
 - **CoordConv**: 增强空间坐标感知
 - **注意力模块**: DEM和LUCC注意力机制，自适应调整特征权重
 - **多尺度特征**: 支持不同分辨率输入输出
 
-### 判别器 (Discriminator)
-判别器用于GAN对抗训练（可选组件）：
-- 3D卷积网络结构
-- 用于判别降水分布的真实性
-- 提升生成结果的细节质量
-
 ### 损失函数
+
 组合损失函数确保重建结果的准确性和真实性：
+
 - **点监督损失**: 基于气象站点观测数据的逐点损失
 - **守恒损失**: 确保空间降水总量守恒
 - **GAN对抗损失**: 生成分布逼近真实分布
@@ -34,14 +34,16 @@
 ## 数据集
 
 ### 输入数据
+
 - **降水数据**: CMORPH卫星降水产品 (0.25° × 0.25°)
 - **高程数据**: SRTM DEM数据 (30m分辨率)
-- **土地利用**: ESA CCI LUCC数据 (300m分辨率)
+- **土地利用**: ESA CCI LUCC数据 (30m分辨率)
 - **站点观测**: 汾河流域气象站点降水观测数据
 
 ### 数据处理流程
 
 #### 1. 卫星降水数据处理 (`cmorph_process.py`)
+
 ```python
 # 时空聚合：小时数据 → 日数据
 # 支持水文体系 (08:00-08:00) 和气象体系 (20:00-20:00)
@@ -49,6 +51,7 @@ process_cmorph_to_fenhe(nc_dir, shp_path, out_base_path, year="2021")
 ```
 
 #### 2. 静态特征处理 (`dem_lucc_process.py`)
+
 ```python
 # DEM和LUCC数据重采样到1km分辨率
 # 坐标对齐和数据清理
@@ -56,6 +59,7 @@ process_static_features_to_1km(dem_path, lucc_path, out_dir)
 ```
 
 #### 3. 站点数据处理 (`real_rain-process.py`)
+
 ```python
 # 气象站点数据预处理
 # 数据清洗和插值
@@ -63,6 +67,7 @@ process_station_data(meta_path, rain_path)
 ```
 
 #### 4. 数据集构建 (`main.py`)
+
 ```python
 # 序列化数据加载
 # 站点观测数据预处理和插值
@@ -70,20 +75,23 @@ dataset = FenheDataset(...)
 ```
 
 ## 项目结构
+
 ```
 ├── main.py              # 主训练脚本和模型定义
 ├── test.py              # 测试版本（简化版）
-├── DataProcess.py       # 数据集定义
-├── cmorph_process.py    # CMORPH降水数据处理
-├── dem_lucc_process.py  # DEM/LUCC静态特征处理
-├── real_rain-process.py # 站点降水数据处理
+├── data_process/        # 数据处理脚本目录
+│   ├── cmorph_process.py    # CMORPH降水数据处理
+│   ├── dem_lucc_process.py  # DEM/LUCC静态特征处理
+│   └── real_rain-process.py # 站点降水数据处理
+├── result/              # 训练结果存储目录
 ├── README.md            # 项目文档
-├── .gitignore           # Git忽略文件
+└── .gitignore           # Git忽略文件
 ```
 
 ## 环境要求
 
 ### 依赖包
+
 ```
 torch >= 1.9.0
 numpy >= 1.21.0
@@ -96,14 +104,10 @@ regionmask >= 0.9.0
 matplotlib >= 3.4.0
 ```
 
-### 安装依赖
-```bash
-pip install torch numpy pandas xarray rioxarray rasterio geopandas regionmask matplotlib
-```
-
 ## 数据准备
 
 ### 目录结构
+
 ```
 data/
 ├── cmorph-2021/
@@ -126,31 +130,34 @@ data/
 ### 数据处理步骤
 
 1. **下载原始数据**
+
    - CMORPH降水数据: https://www.ncei.noaa.gov/
    - SRTM DEM数据: https://www.usgs.gov/
    - ESA CCI LUCC数据: https://www.esa-landcover-cci.org/
-
 2. **运行数据预处理**
+
    ```bash
    # 处理降水数据
-   python cmorph_process.py
+   python data_process/cmorph_process.py
 
    # 处理静态特征
-   python dem_lucc_process.py
+   python data_process/dem_lucc_process.py
 
    # 处理站点数据
-   python real_rain-process.py
+   python data_process/real_rain-process.py
    ```
 
 ## 训练
 
 ### 基本训练
+
 ```python
 from main import train_model
 train_model()
 ```
 
 ### 训练参数
+
 - **批次大小**: 2
 - **序列长度**: 5 (天)
 - **学习率**: 0.0002
@@ -158,17 +165,20 @@ train_model()
 - **隐藏维度**: [16, 32]
 
 ### 损失权重
+
 - **点监督损失**: λ_point = 20.0
 - **守恒损失**: λ_conserve = 5.0
 
 ## 评估
 
 ### 评估指标
+
 - **RMSE**: 站点观测与预测的均方根误差
 - **MAE**: 平均绝对误差
 - **相关系数**: 空间分布相关性
 
 ### 可视化
+
 - 站点观测 vs 预测对比图 (自动生成于训练过程)
 - 时空降水分布可视化
 - 训练损失曲线
@@ -206,36 +216,22 @@ with torch.no_grad():
         break
 ```
 
-## 实验结果
+# 运行记录
 
-### 定量评估
-- **站点RMSE**: < 2.0 mm/day
-- **空间相关性**: > 0.85
-- **降水总量守恒**: 误差 < 5%
-
-### 消融实验
-- **基础ConvLSTM**: 基准性能
-- **+CoordConv**: +8% 空间感知提升
-- **+注意力机制**: +12% 地理特征利用
-- **+站点监督**: +15% 精度提升
-
-## 引用
-
-如果您在研究中使用了本项目，请引用：
-
-```bibtex
-@misc{pl-convlstm-gan-2024,
-  title={Pl-ConvLSTM-GAN: Precipitation Super-Resolution using ConvLSTM and GAN},
-  author={Zhu Hao},
-  year={2024},
-  publisher={GitHub},
-  url={https://github.com/Tomzhuiowewie/Pl-ConvLSTM-GAN}
-}
 ```
 
-## 许可证
-本项目采用MIT许可证。详见LICENSE文件。
-
-## 联系方式
-如有问题或建议，请通过以下方式联系：
-- **GitHub Issues**: https://github.com/Tomzhuiowewie/Pl-ConvLSTM-GAN/issues
+Super-resolution) zhuhao@192 code % python main.py
+Epoch 0 | Loss: 547.4100 | Point: 27.3664 | Conserve: 0.0163 | RMSE: 0.0683
+Epoch 0 | Loss: 548.0262 | Point: 27.4010 | Conserve: 0.0013 | RMSE: 9.7031
+Epoch 0 | Loss: 0.0897 | Point: 0.0003 | Conserve: 0.0167 | RMSE: 0.0113
+Epoch 0 | Loss: 936.2772 | Point: 46.8052 | Conserve: 0.0346 | RMSE: 0.0260
+Epoch 0 | Loss: 34.1742 | Point: 1.6928 | Conserve: 0.0638 | RMSE: 0.0570
+...
+Epoch 0 finished. Avg Station RMSE: 3.6887
+Epoch 1 | Loss: 334.5936 | Point: 16.2057 | Conserve: 2.0960 | RMSE: 0.9653
+Epoch 1 | Loss: 150.5408 | Point: 6.9807 | Conserve: 2.1853 | RMSE: 1.0340
+...
+Epoch 1 finished. Avg Station RMSE: 4.1205
+Epoch 2 | Loss: 932.2823 | Point: 46.1393 | Conserve: 1.8994 | RMSE: 6.0424
+...
+```
