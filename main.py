@@ -5,8 +5,39 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import rasterio
 import geopandas as gpd
+import os
+
+# 创建输出目录
+output_dir = "/root/pi-conv/output"
+os.makedirs(output_dir, exist_ok=True)
+
+# --------------------------- 8. 可视化函数 ------------------------------------
+def plot_stations_vs_pred(s_coords, true_vals, pred_vals, save_path="station_comparison.png"):
+    """
+    绘制站点观测值和预测值的对比图
+    """
+    plt.figure(figsize=(10, 6))
+    
+    # 绘制散点图
+    plt.scatter(true_vals, pred_vals, alpha=0.7)
+    
+    # 绘制对角线表示理想预测
+    max_val = max(np.max(true_vals), np.max(pred_vals))
+    min_val = min(np.min(true_vals), np.min(pred_vals))
+    plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='Ideal Prediction')
+    
+    # 设置图表属性
+    plt.xlabel("True Values")
+    plt.ylabel("Predicted Values")
+    plt.title("Station Observed vs Predicted Precipitation")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    # 保存图表
+    plt.savefig(save_path, dpi=300)
+    plt.close()
 
 
 # --------------------------- 1. CoordConv 辅助函数 ------------------------------
@@ -71,11 +102,10 @@ class ConvLSTMCell(nn.Module):
 
 # --------------------------- 4. 生成器 (Generator) ------------------------------
 class Generator(nn.Module):
-    def __init__(self, in_channels=1, dem_channels=1, lu_channels=None, hidden_dims=[32,64]):
+    def __init__(self, in_channels=1, dem_channels=1, lu_channels=0, hidden_dims=[32,64]):
         super().__init__()
         self.hidden_dims = hidden_dims
         self.lu_channels = lu_channels
-        # +2 for CoordConv
         self.init_conv = nn.Conv2d(in_channels + dem_channels + lu_channels + 2, hidden_dims[0], kernel_size=3, padding=1)
         self.cell1 = ConvLSTMCell(hidden_dims[0], hidden_dims[0])
         self.cell2 = ConvLSTMCell(hidden_dims[0], hidden_dims[1])
@@ -105,26 +135,8 @@ class Generator(nn.Module):
             outputs.append(out_t.unsqueeze(1))
         return torch.cat(outputs, dim=1)
 
-# --------------------------- 5. 判别器 (可选，训练时可忽略) -----------------------
-class Discriminator(nn.Module):
-    def __init__(self, in_channels=1):
-        super().__init__()
-        self.main = nn.Sequential(
-            nn.Conv3d(in_channels, 32, 3, stride=(1,2,2), padding=1),
-            nn.LeakyReLU(0.2),
-            nn.Conv3d(32,64,3,stride=(1,2,2),padding=1),
-            nn.BatchNorm3d(64),
-            nn.LeakyReLU(0.2),
-            nn.AdaptiveAvgPool3d((1,1,1)),
-            nn.Flatten(),
-            nn.Linear(64,1),
-            nn.Sigmoid()
-        )
-    def forward(self,x):
-        x = x.permute(0,2,1,3,4)
-        return self.main(x)
 
-# --------------------------- 6. 组合损失函数 ------------------------------------
+# --------------------------- 5. 组合损失函数 ------------------------------------
 class CombinedLoss(nn.Module):
     def __init__(self, lambda_point=20.0, lambda_conserve=5.0):
         super().__init__()
@@ -132,11 +144,13 @@ class CombinedLoss(nn.Module):
         self.lambda_conserve = lambda_conserve
         self.l1 = nn.L1Loss()
     def conservation_loss(self, pred, lr_input):
+        """物理守恒损失"""
         B,T,C,H,W = pred.shape
         H_lr,W_lr = lr_input.shape[-2:]
         pred_lr = F.interpolate(pred.view(B*T, C, H, W),size=(H_lr, W_lr),mode="area").view(B, T, C, H_lr, W_lr)
         return self.l1(pred_lr, lr_input)
     def point_supervision_loss(self, pred, s_coords, s_values):
+        """点观测监督损失"""
         if s_values is None or s_coords.numel() == 0:
             return torch.tensor(0.0, device=pred.device)
 
@@ -146,22 +160,31 @@ class CombinedLoss(nn.Module):
 
         for b in range(B):
             for t in range(T):
-                rows = s_coords[:, 0]
-                cols = s_coords[:, 1]
-                target = s_values[b, t]
+                # 获取当前batch和time步的站点坐标和值
+                coords = s_coords[b]  # (num_stations, 2)
+                target = s_values[b, t]  # (num_stations,)
 
                 # 【修改】全 NaN 直接跳过
                 if torch.isnan(target).all():
                     continue
 
-                pred_at_stations = pred[b, t, 0, rows, cols]
-                mask = ~torch.isnan(target)
+                # 【修改】添加边界检查，确保索引在有效范围内
+                valid_mask = (coords[:, 0] >= 0) & (coords[:, 0] < H) & (coords[:, 1] >= 0) & (coords[:, 1] < W)
+                valid_rows = coords[valid_mask, 0]
+                valid_cols = coords[valid_mask, 1]
+                valid_target = target[valid_mask]
 
                 # 【修改】有效站点数为 0，跳过
+                if valid_target.numel() == 0 or valid_mask.sum() == 0:
+                    continue
+
+                pred_at_stations = pred[b, t, 0, valid_rows, valid_cols]
+                mask = ~torch.isnan(valid_target)
+
                 if mask.sum() == 0:
                     continue
 
-                loss += F.mse_loss(pred_at_stations[mask], target[mask])
+                loss += F.mse_loss(pred_at_stations[mask], valid_target[mask])
                 count += 1
 
         if count == 0:
@@ -175,7 +198,7 @@ class CombinedLoss(nn.Module):
         total_loss = self.lambda_point*loss_point + self.lambda_conserve*loss_conserve
         return total_loss, {"point":loss_point,"conserve":loss_conserve}
 
-# --------------------------- 7. 数据集 -----------------------------------------------
+# --------------------------- 6. 数据集 -----------------------------------------------
 def get_shapefile_extent(shp_path):
     gdf = gpd.read_file(shp_path)
     minx,miny,maxx,maxy = gdf.total_bounds
@@ -183,12 +206,14 @@ def get_shapefile_extent(shp_path):
 
 class FenheDataset(Dataset):
     def __init__(self, rain_lr_path, dem_path, lucc_path, meta_path, rain_excel_path, shp_path, T=5):
+        # 卫星降水数据(低分辨率数据)
         self.rain_lr = np.nan_to_num(
             np.load(rain_lr_path).astype(np.float32),
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
         )
+
         self.dem = np.load(dem_path)
         self.lucc = np.load(lucc_path).astype(int)
         self.T = T
@@ -212,9 +237,8 @@ class FenheDataset(Dataset):
         """
         num_classes = lucc.max() + 1
         H, W = lucc.shape
-        onehot = np.zeros((num_classes, H, W), dtype=np.float32)
-        for c in range(num_classes):
-            onehot[c] = (lucc == c).astype(np.float32)
+        onehot = np.eye(num_classes)[lucc].transpose(2,0,1).astype(np.float32)
+
         return onehot
 
     def _prepare_stations(self, meta_path, rain_excel_path):
@@ -241,7 +265,9 @@ class FenheDataset(Dataset):
             r_idx = int((max_lat - lat) / (max_lat - min_lat) * (rows_total - 1))
             c_idx = int((lon - min_lon) / (max_lon - min_lon) * (cols_total - 1))
 
+            # 超出边界就跳过
             if not (0 <= r_idx < rows_total and 0 <= c_idx < cols_total):
+                print(f"Station {st_id} ({lat},{lon}) out of bounds, skipped")
                 continue
 
             col = str(st_id)
@@ -277,9 +303,13 @@ class FenheDataset(Dataset):
             coords.append([r_idx, c_idx])
             val_list.append(series)
         
+        if len(val_list) == 0:
+            raise ValueError("No valid stations found within grid bounds!")
+
         stacked = np.stack(val_list, axis=1).astype(np.float32)
         stacked_clean = np.nan_to_num(stacked, nan=0.0, posinf=0.0, neginf=0.0)
         return np.array(coords), stacked_clean
+
 
 
     def __len__(self):
@@ -312,93 +342,144 @@ class FenheDataset(Dataset):
 
         return x_lr, dem, lu, s_coords, s_vals
 
-# --------------------------- 8. 训练逻辑（带站点 RMSE 和可视化） -----------------------
-def plot_stations_vs_pred(s_coords, s_true, s_pred, save_path="station_comparison.png"):
-    """
-    可视化站点真值与预测对比
-    s_coords: (num_stations, 2)
-    s_true: (num_stations,)
-    s_pred: (num_stations,)
-    """
-    plt.figure(figsize=(8,5))
-    plt.scatter(range(len(s_true)), s_true, label="Observed", marker='o')
-    plt.scatter(range(len(s_pred)), s_pred, label="Predicted", marker='x')
-    plt.xlabel("Station Index")
-    plt.ylabel("Precipitation")
-    plt.title("Station Observed vs Predicted")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
-
+# --------------------------- 7. 训练逻辑（带站点 RMSE 和可视化） -----------------------
 def train_model():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dataset = FenheDataset(
-        rain_lr_path="data/cmorph-2021/daily/fenhe_hydro_08-08_2021.npy",
-        dem_path="data/static_features_1km/dem_1km.npy",
-        lucc_path="data/static_features_1km/lucc_1km.npy",
-        meta_path="data/climate/meta.xlsx",
-        rain_excel_path="data/climate/rain.xlsx",
-        shp_path="data/FenheBasin/fenhe.shp",
+        
+        rain_lr_path="/root/pi-conv/daily/fenhe_hydro_08-08_2021.npy",
+        dem_path="/root/pi-conv/static_features_1km/dem_1km.npy",
+        lucc_path="/root/pi-conv/static_features_1km/lucc_1km.npy",
+        meta_path="/root/pi-conv/climate/meta.xlsx",
+        rain_excel_path="/root/pi-conv/climate/rain.xlsx",
+        shp_path="/root/pi-conv/FenheBasin/fenhe.shp",
         T=5
     )
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
     num_lu_classes = dataset.lucc_onehot.shape[0]
     G = Generator(hidden_dims=[16,32], lu_channels=num_lu_classes).to(device)
-    optimizer = torch.optim.Adam(G.parameters(), lr=0.0002)
-    loss_module = CombinedLoss()
+    optimizer = torch.optim.Adam(G.parameters(), lr=0.0001)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5
+    )
+    loss_module = CombinedLoss(lambda_point=0.1, lambda_conserve=1.0)
+
+    T = dataset.T
+    rmse_time_history = [[] for _ in range(T)]  # 保存每个时间步 RMSE
 
     for epoch in range(50):
-        all_rmse = []
+        all_batch_rmse = []
+
         for i, (lr, dem, lu, s_coords, s_values) in enumerate(dataloader):
             lr, dem, lu = lr.to(device), dem.to(device), lu.to(device)
-            s_values, s_coords = s_values.to(device), s_coords[0]
+            s_values, s_coords = s_values.to(device), s_coords.to(device)
 
             optimizer.zero_grad()
             fake_hr = G(lr, dem, lu)
             loss, loss_dict = loss_module(fake_hr, lr, s_coords, s_values)
-            # 【修改】NaN 保护
+
             if torch.isnan(loss):
                 print("NaN detected, skip this batch")
-                optimizer.zero_grad()
                 continue
+
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(G.parameters(), max_norm=0.5)
             optimizer.step()
 
-            # 计算 batch 内站点 RMSE
-            rows, cols = s_coords[:,0], s_coords[:,1]
+            # ---------- 全 batch 全时间步站点 RMSE ----------
             with torch.no_grad():
-                # 取 batch 第0条数据，第0个时间步的预测
-                pred_vals = fake_hr[0,0,0,rows,cols]
-                true_vals = s_values[0,0]
-                mask = ~torch.isnan(true_vals)
-                if mask.sum() > 0:
-                    batch_rmse = torch.sqrt(
-                        F.mse_loss(pred_vals[mask], true_vals[mask])
-                    )
+                B, T, C, H, W = fake_hr.shape
+                pred_vals = fake_hr[:,:,0,:,:]  # (B,T,H,W)
+
+                # 【修改】检查数据形状
+                # print(f"debug: s_coords shape: {s_coords.shape}, s_values shape: {s_values.shape}")
+
+                # 获取站点坐标
+                if len(s_coords.shape) == 3:  # (B, num_stations, 2)
+                    # 从第一个样本获取站点坐标（所有样本共享坐标）
+                    rows = s_coords[0, :, 0]
+                    cols = s_coords[0, :, 1]
+                else:  # (num_stations, 2)
+                    rows = s_coords[:, 0]
+                    cols = s_coords[:, 1]
+                    
+                num_stations = rows.shape[0]
+
+                # 【修改】添加边界检查，确保站点坐标在有效范围内
+                valid_station_mask = (rows >= 0) & (rows < H) & (cols >= 0) & (cols < W)
+                valid_rows = rows[valid_station_mask]
+                valid_cols = cols[valid_station_mask]
+                valid_num_stations = valid_rows.shape[0]
+
+                if valid_num_stations > 0:
+                    batch_idx = torch.arange(B, device=device).view(B,1,1).expand(B,T,valid_num_stations)
+                    time_idx  = torch.arange(T, device=device).view(1,T,1).expand(B,T,valid_num_stations)
+                    rows_expand = valid_rows.view(1,1,-1).expand(B,T,valid_num_stations)
+                    cols_expand = valid_cols.view(1,1,-1).expand(B,T,valid_num_stations)
+
+                    pred_at_stations = pred_vals[batch_idx, time_idx, rows_expand, cols_expand]  # (B,T,valid_num_stations)
+                    
+                    # 【修改】正确索引 s_values
+                    if len(s_coords.shape) == 3:  # (B, num_stations, 2)
+                        true_vals = s_values[:, :, valid_station_mask]  # (B,T,valid_num_stations)
+                    else:  # (B, T, num_stations)
+                        true_vals = s_values[:, :, valid_station_mask]  # (B,T,valid_num_stations)
+                        
+                    mask = ~torch.isnan(true_vals)
+
+                    if mask.sum() > 0:
+                        batch_rmse = torch.sqrt(F.mse_loss(pred_at_stations[mask], true_vals[mask]))
+                    else:
+                        batch_rmse = torch.tensor(0.0, device=device)
                 else:
                     batch_rmse = torch.tensor(0.0, device=device)
-                all_rmse.append(batch_rmse.item())
+
+                all_batch_rmse.append(batch_rmse.item())
+
+                # ---------- 分时间步 RMSE ----------
+                if valid_num_stations > 0:
+                    for t in range(T):
+                        mask_t = mask[:,t,:]
+                        if mask_t.sum() > 0:
+                            rmse_t = torch.sqrt(F.mse_loss(pred_at_stations[:,t,:][mask_t], true_vals[:,t,:][mask_t]))
+                        else:
+                            rmse_t = torch.tensor(0.0, device=device)
+                        rmse_time_history[t].append(rmse_t.item())
 
             if i % 10 == 0:
                 print(f"Epoch {epoch} | Loss: {loss:.4f} | Point: {loss_dict['point']:.4f} | "
-                      f"Conserve: {loss_dict['conserve']:.4f} | RMSE: {batch_rmse:.4f}")
+                      f"Conserve: {loss_dict['conserve']:.4f} | Batch RMSE: {batch_rmse:.4f}")
 
-        # 每个 epoch 保存一次站点对比图
-        plot_stations_vs_pred(
-            s_coords.cpu().numpy(),
-            true_vals.cpu().numpy(),
-            pred_vals.cpu().numpy(),
-            save_path=f"station_comparison_epoch_{epoch}.png"
-        )
+        # ---------- 保存站点对比图 ----------
+        if valid_num_stations > 0:
+            pred_station_mean = pred_at_stations[0].mean(dim=0).cpu().numpy()  # (valid_num_stations,)
+            true_station_mean = true_vals[0].mean(dim=0).cpu().numpy()          # (valid_num_stations,)
+            plot_stations_vs_pred(
+                s_coords[0, valid_station_mask].cpu().numpy(),
+                true_station_mean,
+                pred_station_mean,
+                save_path=os.path.join(output_dir, f"station_comparison_epoch_{epoch}.png")
+            )
 
-        print(f"Epoch {epoch} finished. Avg Station RMSE: {np.mean(all_rmse):.4f}")
+        print(f"Epoch {epoch} finished. Avg Batch RMSE: {np.mean(all_batch_rmse):.4f}")
+        scheduler.step(np.mean(all_batch_rmse))
 
-    torch.save(G.state_dict(), "generator_coordconv.pth")
-    print("训练完成，模型已保存！")
+        # ---------- 绘制时间步 RMSE 折线图 ----------
+        plt.figure(figsize=(6,4))
+        for t in range(T):
+            if len(rmse_time_history[t]) > 0:
+                plt.plot(range(len(rmse_time_history[t])), rmse_time_history[t], label=f'Time step {t}')
+        plt.xlabel("Batch index")
+        plt.ylabel("RMSE")
+        plt.title(f"RMSE per Time Step - Epoch {epoch}")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"rmse_per_time_epoch_{epoch}.png"))
+        plt.close()
+
 
 if __name__=="__main__":
     train_model()
