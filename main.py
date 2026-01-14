@@ -233,7 +233,7 @@ class FenheDataset(Dataset):
     def _lucc_to_onehot(self, lucc):
         """
         lucc: (H,W) 整数标签
-        输出: (C, H, W) 独热编码
+        输出: (C, H, W) 独热编码 123
         """
         num_classes = lucc.max() + 1
         H, W = lucc.shape
