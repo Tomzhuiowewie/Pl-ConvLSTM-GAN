@@ -131,10 +131,6 @@ python main.py
 
 本项目采用 MIT 许可证，详情请查看 LICENSE 文件。
 
-## 贡献
-
-欢迎提交 Pull Request 和 Issue！
-
 ## 作者
 
 - [Tomzhuiowewie](https://github.com/Tomzhuiowewie)
