@@ -60,7 +60,7 @@ def process_cmorph_to_fenhe(nc_dir, shp_path, out_base_path, year="2021", save=T
         lat=slice(lat_valid.min(), lat_valid.max())
     )
     
-    # 按不同体系聚合：将 24 小时数据求和
+    # 不同体系聚合：将 24 小时数据求和
     # 【水文体系】当日 08:00 -> 次日 08:00 (北京时间)
     # 因为 UTC 00:00 = 北京 08:00，所以直接按 UTC 自然日聚合
     daily_hydro = masked_precip.resample(time="1D").sum(min_count=24)
