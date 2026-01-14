@@ -349,12 +349,12 @@ def train_model():
 
     dataset = FenheDataset(
         
-        rain_lr_path="/root/pi-conv/daily/fenhe_hydro_08-08_2021.npy",
-        dem_path="/root/pi-conv/static_features_1km/dem_1km.npy",
-        lucc_path="/root/pi-conv/static_features_1km/lucc_1km.npy",
-        meta_path="/root/pi-conv/climate/meta.xlsx",
-        rain_excel_path="/root/pi-conv/climate/rain.xlsx",
-        shp_path="/root/pi-conv/FenheBasin/fenhe.shp",
+        rain_lr_path="data/cmorph-2021/daily/fenhe_hydro_08-08_2021.npy",
+        dem_path="data/static_features_1km/dem_1km.npy",
+        lucc_path="data/static_features_1km/lucc_1km.npy",
+        meta_path="data/climate/meta.xlsx",
+        rain_excel_path="data/climate/rain.xlsx",
+        shp_path="data/FenheBasin/fenhe.shp",
         T=5
     )
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
