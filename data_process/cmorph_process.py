@@ -51,8 +51,8 @@ def process_cmorph_to_fenhe(nc_dir, shp_path, out_base_path, year="2021", save=T
     # 获取流域内有效数据的边界
     valid_mask = mask.isel(region=0) == 0
     # 找到有效区域的经纬度范围
-    lon_valid = ds.lon.where(valid_mask.any(dim='time')).dropna('lon')
-    lat_valid = ds.lat.where(valid_mask.any(dim='time')).dropna('lat')
+    lon_valid = ds.lon.where(valid_mask.any(dim='lat')).dropna('lon')
+    lat_valid = ds.lat.where(valid_mask.any(dim='lon')).dropna('lat')
     
     # 裁剪到包含流域的最小矩形
     masked_precip = masked_precip.sel(
