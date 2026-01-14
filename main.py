@@ -206,7 +206,7 @@ def get_shapefile_extent(shp_path):
 
 class FenheDataset(Dataset):
     def __init__(self, rain_lr_path, dem_path, lucc_path, meta_path, rain_excel_path, shp_path, T=5):
-        # 卫星降水数据(低分辨率数据)
+        # 卫星降水数据-将nan、∞置为0
         self.rain_lr = np.nan_to_num(
             np.load(rain_lr_path).astype(np.float32),
             nan=0.0,
@@ -348,14 +348,13 @@ def train_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dataset = FenheDataset(
-        
-        rain_lr_path="data/cmorph-2021/daily/fenhe_hydro_08-08_2021.npy",
-        dem_path="data/static_features_1km/dem_1km.npy",
-        lucc_path="data/static_features_1km/lucc_1km.npy",
-        meta_path="data/climate/meta.xlsx",
-        rain_excel_path="data/climate/rain.xlsx",
-        shp_path="data/FenheBasin/fenhe.shp",
-        T=5
+        rain_lr_path="data/cmorph-2021/daily/fenhe_hydro_08-08_2021.npy", # 卫星降水数据
+        dem_path="data/static_features_1km/dem_1km.npy",    # 高程数据
+        lucc_path="data/static_features_1km/lucc_1km.npy",  # 下垫面数据
+        meta_path="data/climate/meta.xlsx", # 雨量站点元数据
+        rain_excel_path="data/climate/rain.xlsx",   # 雨量站观测数据
+        shp_path="data/FenheBasin/fenhe.shp",   # 汾河流域范围
+        T=5 # 时间框口大小
     )
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
