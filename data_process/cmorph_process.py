@@ -95,15 +95,39 @@ def process_cmorph_to_fenhe(nc_dir, shp_path, out_base_path, year="2021", save=T
         # 5. 可视化对比 (7月10日为例)
         try:
             fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-            daily_hydro.sel(time=f"{year}-07-10").plot(ax=axes[0], cmap="Blues", vmin=0, vmax=50)
-            axes[0].set_title("Hydrological (08:00-08:00)")
             
-            daily_cma.sel(time=f"{year}-07-10").plot(ax=axes[1], cmap="Blues", vmin=0, vmax=50)
+            # 水文体系降水图
+            daily_hydro.sel(time=f"{year}-07-10").plot(
+                ax=axes[0], 
+                cmap="Blues", 
+                vmin=0, vmax=50,
+                add_colorbar=True
+            )
+            axes[0].set_title("Hydrological (08:00-08:00)")
+            axes[0].set_xlabel("经度 (°)")
+            axes[0].set_ylabel("纬度 (°)")
+            
+            # 气象体系降水图
+            daily_cma.sel(time=f"{year}-07-10").plot(
+                ax=axes[1], 
+                cmap="Blues", 
+                vmin=0, vmax=50,
+                add_colorbar=True
+            )
             axes[1].set_title("Meteorological (20:00-20:00)")
+            axes[1].set_xlabel("经度 (°)")
+            axes[1].set_ylabel("纬度 (°)")
+            
             plt.tight_layout()
             plt.show()
-        except:
-            print("提示：该日期数据不足，跳过绘图。")
+            
+            # 打印实际经纬度范围
+            lon_min, lon_max = float(daily_hydro.lon.min()), float(daily_hydro.lon.max())
+            lat_min, lat_max = float(daily_hydro.lat.min()), float(daily_hydro.lat.max())
+            print(f"裁剪后数据范围: 经度 {lon_min:.2f}°~{lon_max:.2f}°, 纬度 {lat_min:.2f}°~{lat_max:.2f}°")
+            
+        except Exception as e:
+            print(f"提示：该日期数据不足或绘图失败，跳过绘图。错误: {e}")
     
     else:
         return daily_hydro, daily_cma
