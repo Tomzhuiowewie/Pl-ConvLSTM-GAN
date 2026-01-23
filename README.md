@@ -14,63 +14,95 @@ Pl-ConvLSTM-GAN 是一个用于降水超分辨率重建的深度学习模型，�
 ## 项目结构
 
 ```
-├── main.py              # 主训练脚本和模型定义
-├── README.md            # 项目文档
-├── .gitignore           # Git忽略文件
+├── main.py              # CLI 入口，调用模块化训练流程
+├── requirements.txt     # 项目依赖包列表
+├── src/
+│   ├── config.py        # 配置管理模块
+│   ├── preprocessing/   # 原始数据处理脚本（CMORPH、DEM、站点等）
+│   │   ├── cmorph.py    # CMORPH卫星降水数据处理
+│   │   ├── dem_lucc.py  # DEM和LUCC静态特征处理
+│   │   └── station.py   # 气象站点数据处理
+│   ├── models/          # 模型结构（ConvLSTM Generator、注意力模块等）
+│   │   ├── generator.py # 生成器主模型
+│   │   ├── convlstm.py  # ConvLSTM单元
+│   │   ├── attention.py # 注意力机制
+│   │   └── coordconv.py # 坐标感知卷积
+│   ├── losses/          # 损失函数定义
+│   │   └── combined_loss.py # 组合损失函数
+│   ├── training/        # 训练流程
+│   │   └── trainer.py   # 训练器主类
+│   ├── datasets/        # 数据集加载器
+│   │   └── fenhe_dataset.py # 汾河流域数据集
+│   └── utils/           # 可视化与通用工具
+│       ├── visualization.py # 可视化工具
+│       └── compare_station_alignment.py # 站点对齐分析
+├── configs/             # 配置文件目录
+│   └── default.yaml     # 默认配置文件
 ├── data/                # 数据目录
-│   ├── climate/         # 气象站点数据
-│   │   ├── meta.xlsx    # 站点元数据
-│   │   └── rain.xlsx    # 站点降水数据
-│   ├── FenheBasin/      # 汾河流域边界数据
-│   │   └── fenhe.shp    # 流域边界Shapefile
-│   ├── static_features_1km/  # 静态特征数据（1km分辨率）
-│   │   ├── dem_1km.npy  # 数字高程模型
-│   │   ├── lucc_1km.npy # 土地利用数据
-│   │   ├── lats_1km.npy # 纬度坐标
-│   │   └── lons_1km.npy # 经度坐标
-│   └── cmorph-2021/     # CMORPH卫星降水数据（2021年）
-│       └── daily/       # 日降水数据
-├── data_process/        # 数据处理脚本目录
-│   ├── cmorph_process.py    # CMORPH降水数据处理
-│   ├── dem_lucc_process.py  # DEM/LUCC静态特征处理
-│   └── real_rain-process.py # 站点降水数据处理
-└── output/              # 训练结果存储目录
-    ├── station_comparison_epoch_*.png  # 站点观测与预测对比图
-    └── rmse_per_time_epoch_*.png       # 时间步RMSE曲线图
+│   ├── raw/             # 原始数据
+│   │   ├── climate/     # 气象站点数据
+│   │   │   ├── meta.xlsx # 站点元数据
+│   │   │   └── rain.xlsx # 站点降水数据
+│   │   ├── FenheBasin/  # 汾河流域边界数据
+│   │   │   └── fenhe.shp # 流域边界Shapefile
+│   │   └── cmorph/      # CMORPH原始数据
+│   ├── interim/         # 中间处理数据
+│   │   ├── daily/       # 日尺度数据
+│   │   └── test/        # 测试数据
+│   └── processed/       # 处理后的数据
+│       ├── daily/       # 日尺度处理后数据
+│       └── static_features_1km/ # 静态特征数据（1km分辨率）
+│           ├── dem_1km.npy # 数字高程模型
+│           ├── lucc_1km.npy # 土地利用数据
+│           ├── lats_1km.npy # 纬度坐标
+│           └── lons_1km.npy # 经度坐标
+└── output/              # 训练及分析结果（已在 .gitignore 中排除）
 ```
 
 ## 安装依赖
 
 ```bash
-# 安装所需的 Python 库
-pip install torch torchvision numpy pandas matplotlib geopandas
+# 从 requirements.txt 安装所需的 Python 库
+pip install -r requirements.txt
+```
+
+或手动安装核心依赖：
+
+```bash
+pip install torch>=1.9.0 torchvision>=0.10.0 numpy>=1.19.0 \
+            pandas>=1.3.0 matplotlib>=3.3.0 geopandas>=0.9.0 \
+            shapely>=1.7.0 fiona>=1.8.0 rasterio>=1.2.0 \
+            xarray>=0.18.0 netCDF4>=1.5.0
 ```
 
 ## 数据预处理
 
-### 1. 卫星降水数据处理 (`cmorph_process.py`)
+### 1. 卫星降水数据处理 (`cmorph.py`)
 
 ```python
 # 处理 CMORPH 降水数据，支持水文和气象时间体系
-python data_process/cmorph_process.py
+python -m src.preprocessing.cmorph
 ```
 
-### 2. 静态特征处理 (`dem_lucc_process.py`)
+### 2. 静态特征处理 (`dem_lucc.py`)
 
 ```python
 # 处理 DEM 和 LUCC 数据，重采样到 1km 分辨率
-python data_process/dem_lucc_process.py
+python -m src.preprocessing.dem_lucc
 ```
 
 ### 3. 站点数据处理
 
-站点数据处理已集成到 `main.py` 中，无需额外运行脚本。
+站点数据处理已集成到训练流程中，通过 `src.datasets.fenhe_dataset.py` 自动加载。
 
 ## 训练模型
 
 ```bash
-# 运行主训练脚本
+# 运行主训练脚本（使用默认配置）
 python main.py
+
+# 或指定特定配置
+python main.py --config dev
 ```
 
 ### 训练参数
@@ -123,9 +155,23 @@ python main.py
 ## 技术栈
 
 - **深度学习框架**: PyTorch
-- **数据处理**: NumPy, Pandas, GeoPandas
+- **数据处理**: NumPy, Pandas, GeoPandas, XArray
 - **可视化**: Matplotlib
-- **GIS 操作**: Shapely, Fiona
+- **GIS 操作**: Shapely, Fiona, Rasterio
+- **科学计算**: NetCDF4
+
+## 配置管理
+
+项目使用 YAML 配置文件管理超参数和数据路径：
+
+- `configs/default.yaml`: 默认训练配置
+- 通过 `src.config.py` 进行配置加载和验证
+
+## 数据管理
+
+- **原始数据**: `data/raw/` - 存放原始卫星和站点数据
+- **中间数据**: `data/interim/` - 存放预处理过程中的中间结果
+- **处理后数据**: `data/processed/` - 存放最终用于训练的数据
 
 ## 许可证
 

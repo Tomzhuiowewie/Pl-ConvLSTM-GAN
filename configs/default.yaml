@@ -1,0 +1,33 @@
+# 默认配置文件
+data:
+  rain_lr_path: "data/processed/daily/fenhe_hydro_08-08_2021.npy"
+  dem_path: "data/processed/static_features_1km/dem_1km.npy"
+  lucc_path: "data/processed/static_features_1km/lucc_1km.npy"
+  meta_path: "data/raw/climate/meta.xlsx"
+  rain_excel_path: "data/raw/climate/rain.xlsx"
+  shp_path: "data/raw/FenheBasin/fenhe.shp"
+
+model:
+  hidden_dims: [16, 32]
+  T: 5  # 时间框口大小
+  scale_factor: 8  # 上采样倍数（如果不使用 target_grid_size）
+  # target_grid_size: [500, 500]  # 目标网格尺寸（米）
+  # input_grid_size: [25000, 25000]  # 输入网格尺寸（米）
+
+training:
+  batch_size: 8            # 从2增加到8，提升训练稳定性
+  epochs: 50
+  learning_rate: 0.001     # 从0.0001增加到0.001，加快收敛
+  lambda_point: 1.0        # 站点监督损失权重（已平衡）
+  lambda_conserve: 1.0     # 物理守恒损失权重
+  lambda_smooth: 0.1       # 空间平滑损失权重
+  lambda_temporal: 0.05    # 时间一致性损失权重
+  grad_clip_norm: 0.5
+  scheduler_patience: 5
+  scheduler_factor: 0.5
+
+output:
+  output_dir: "output"
+  log_interval: 10
+  save_model_interval: 10
+  plot_dpi: 300

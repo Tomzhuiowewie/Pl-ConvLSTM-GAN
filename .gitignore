@@ -1,6 +1,7 @@
-/data/cmorph-2021
-/data/dem
-/data/lucc
+/data/raw
+/data/interim
+/data/processed
 *.npy
 *.rar
 .DS_Store
+/output
