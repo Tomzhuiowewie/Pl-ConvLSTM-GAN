@@ -16,7 +16,7 @@ model:
 
 training:
   batch_size: 8            # 从2增加到8，提升训练稳定性
-  epochs: 50
+  epochs: 100
   learning_rate: 0.001     # 从0.0001增加到0.001，加快收敛
   lambda_point: 1.0        # 站点监督损失权重（已平衡）
   lambda_conserve: 1.0     # 物理守恒损失权重
