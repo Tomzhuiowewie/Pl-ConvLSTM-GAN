@@ -30,19 +30,53 @@ def plot_stations_vs_pred(s_coords, true_vals, pred_vals, save_path="station_com
     plt.close()
 
 
-def plot_rmse_per_time_step(rmse_time_history, epoch, output_dir):
+def plot_training_curves(history, save_path="training_curves.png"):
     """
-    绘制每个时间步的RMSE变化图
+    绘制训练收敛曲线
+    
+    Args:
+        history: dict, 包含 'epoch', 'loss', 'rmse', 'lr' 等训练历史
+        save_path: 保存路径
     """
-    T = len(rmse_time_history)
-    plt.figure(figsize=(6, 4))
-    for t in range(T):
-        if len(rmse_time_history[t]) > 0:
-            plt.plot(range(len(rmse_time_history[t])), rmse_time_history[t], label=f'Time step {t}')
-    plt.xlabel("Batch index")
-    plt.ylabel("RMSE")
-    plt.title(f"RMSE per Time Step - Epoch {epoch}")
-    plt.legend()
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    
+    epochs = history['epoch']
+    
+    # 1. 总损失曲线
+    axes[0, 0].plot(epochs, history['total_loss'], 'b-', linewidth=2)
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('Total Loss')
+    axes[0, 0].set_title('Training Loss Convergence')
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # 2. RMSE曲线
+    axes[0, 1].plot(epochs, history['rmse'], 'r-', linewidth=2)
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('RMSE')
+    axes[0, 1].set_title('RMSE Convergence')
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # 3. 各项损失分量
+    axes[1, 0].plot(epochs, history['point_loss'], label='Point Loss', linewidth=1.5)
+    axes[1, 0].plot(epochs, history['conserve_loss'], label='Conserve Loss', linewidth=1.5)
+    axes[1, 0].plot(epochs, history['smooth_loss'], label='Smooth Loss', linewidth=1.5)
+    axes[1, 0].plot(epochs, history['temporal_loss'], label='Temporal Loss', linewidth=1.5)
+    axes[1, 0].set_xlabel('Epoch')
+    axes[1, 0].set_ylabel('Loss')
+    axes[1, 0].set_title('Loss Components')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # 4. 学习率变化
+    if 'learning_rate' in history:
+        axes[1, 1].plot(epochs, history['learning_rate'], 'g-', linewidth=2)
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('Learning Rate')
+        axes[1, 1].set_title('Learning Rate Schedule')
+        axes[1, 1].set_yscale('log')
+        axes[1, 1].grid(True, alpha=0.3)
+    
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f"rmse_per_time_epoch_{epoch}.png"))
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
+    print(f"Training curves saved to {save_path}")

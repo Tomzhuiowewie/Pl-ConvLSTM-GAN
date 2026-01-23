@@ -7,7 +7,7 @@ import os
 from src.datasets.fenhe_dataset import FenheDataset
 from src.losses.combined_loss import CombinedLoss
 from src.models.generator import Generator
-from src.utils.visualization import plot_stations_vs_pred, plot_rmse_per_time_step
+from src.utils.visualization import plot_stations_vs_pred, plot_training_curves
 from src.config import Config, load_config
 
 
@@ -24,6 +24,22 @@ class Trainer:
         # 创建输出目录
         self.output_dir = self.config.output.output_dir
         os.makedirs(self.output_dir, exist_ok=True)
+        
+        # 训练历史记录
+        self.history = {
+            'epoch': [],
+            'total_loss': [],
+            'point_loss': [],
+            'conserve_loss': [],
+            'smooth_loss': [],
+            'temporal_loss': [],
+            'rmse': [],
+            'learning_rate': []
+        }
+        
+        # 追踪最佳模型
+        self.best_rmse = float('inf')
+        self.best_epoch = -1
         
     def setup_data(self):
         """设置数据集和数据加载器"""
@@ -134,7 +150,13 @@ class Trainer:
     def train_epoch(self, epoch, T):
         """训练一个epoch"""
         all_batch_rmse = []
-        rmse_time_history = [[] for _ in range(T)]
+        epoch_losses = {
+            'total': [],
+            'point': [],
+            'conserve': [],
+            'smooth': [],
+            'temporal': []
+        }
         
         for i, (lr, dem, lu, s_coords, s_values) in enumerate(self.dataloader):
             lr, dem, lu = lr.to(self.device), dem.to(self.device), lu.to(self.device)
@@ -167,30 +189,29 @@ class Trainer:
             )
             self.optimizer.step()
             
+            # 记录损失(确保转换为Python标量)
+            epoch_losses['total'].append(loss.item())
+            epoch_losses['point'].append(float(loss_dict['point']))
+            epoch_losses['conserve'].append(float(loss_dict['conserve']))
+            epoch_losses['smooth'].append(float(loss_dict['smooth']))
+            epoch_losses['temporal'].append(float(loss_dict['temporal']))
+            
             # 计算站点RMSE
             with torch.no_grad():
                 batch_rmse, pred_at_stations, true_vals, valid_station_mask, mask = self.compute_station_rmse(
                     fake_hr, s_coords, s_values, scale_factor
                 )
                 all_batch_rmse.append(batch_rmse.item())
-                
-                # 分时间步RMSE
-                if valid_station_mask.sum() > 0:
-                    for t in range(T):
-                        mask_t = mask[:,t,:]
-                        if mask_t.sum() > 0:
-                            rmse_t = torch.sqrt(F.mse_loss(pred_at_stations[:,t,:][mask_t], true_vals[:,t,:][mask_t]))
-                        else:
-                            rmse_t = torch.tensor(0.0, device=self.device)
-                        rmse_time_history[t].append(rmse_t.item())
             
             # 日志输出
             if i % self.config.output.log_interval == 0:
                 print(f"Epoch {epoch} | Loss: {loss:.4f} | Point: {loss_dict['point']:.4f} | "
                       f"Conserve: {loss_dict['conserve']:.4f} | Smooth: {loss_dict['smooth']:.4f} | "
                       f"Temporal: {loss_dict['temporal']:.4f} | Batch RMSE: {batch_rmse:.4f}")
-                      
-        return all_batch_rmse, rmse_time_history, pred_at_stations, true_vals, s_coords, valid_station_mask
+        
+        # 计算平均损失
+        avg_losses = {k: np.mean(v) if len(v) > 0 else 0.0 for k, v in epoch_losses.items()}
+        return all_batch_rmse, pred_at_stations, true_vals, s_coords, valid_station_mask, avg_losses
         
     def train(self):
         """完整的训练流程"""
@@ -201,33 +222,70 @@ class Trainer:
         T = self.config.model.T
         
         for epoch in range(self.config.training.epochs):
-            all_batch_rmse, rmse_time_history, pred_at_stations, true_vals, s_coords, valid_station_mask = self.train_epoch(epoch, T)
+            all_batch_rmse, pred_at_stations, true_vals, s_coords, valid_station_mask, avg_losses = self.train_epoch(epoch, T)
             
-            # 保存站点对比图
-            if valid_station_mask.sum() > 0:
-                pred_station_mean = pred_at_stations[0].mean(dim=0).cpu().numpy()
-                true_station_mean = true_vals[0].mean(dim=0).cpu().numpy()
-                plot_stations_vs_pred(
-                    s_coords[0, valid_station_mask].cpu().numpy(),
-                    true_station_mean,
-                    pred_station_mean,
-                    save_path=os.path.join(self.output_dir, f"station_comparison_epoch_{epoch}.png")
-                )
+            # 记录训练历史
+            self.history['epoch'].append(epoch)
+            self.history['total_loss'].append(avg_losses['total'])
+            self.history['point_loss'].append(avg_losses['point'])
+            self.history['conserve_loss'].append(avg_losses['conserve'])
+            self.history['smooth_loss'].append(avg_losses['smooth'])
+            self.history['temporal_loss'].append(avg_losses['temporal'])
+            self.history['rmse'].append(np.mean(all_batch_rmse))
+            self.history['learning_rate'].append(self.optimizer.param_groups[0]['lr'])
             
             print(f"Epoch {epoch} finished. Avg Batch RMSE: {np.mean(all_batch_rmse):.4f}")
             self.scheduler.step(np.mean(all_batch_rmse))
             
-            # 绘制时间步RMSE图
-            plot_rmse_per_time_step(rmse_time_history, epoch, self.output_dir)
+            # 每10个epoch绘制一次收敛曲线
+            if (epoch + 1) % 10 == 0:
+                plot_training_curves(
+                    self.history,
+                    save_path=os.path.join(self.output_dir, "training_curves.png")
+                )
             
-            # 保存模型
-            if (epoch + 1) % self.config.output.save_model_interval == 0:
-                model_path = os.path.join(self.output_dir, f"model_epoch_{epoch+1}.pth")
+            # 只保存最佳模型
+            current_rmse = np.mean(all_batch_rmse)
+            if current_rmse < self.best_rmse:
+                self.best_rmse = current_rmse
+                self.best_epoch = epoch
+                
+                # 删除旧的最佳模型
+                old_best_path = os.path.join(self.output_dir, "best_model.pth")
+                if os.path.exists(old_best_path):
+                    os.remove(old_best_path)
+                
+                # 保存新的最佳模型
+                best_model_path = os.path.join(self.output_dir, "best_model.pth")
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'scheduler_state_dict': self.scheduler.state_dict(),
-                    'rmse': np.mean(all_batch_rmse)
-                }, model_path)
-                print(f"Model saved to {model_path}")
+                    'rmse': current_rmse,
+                    'history': self.history
+                }, best_model_path)
+                print(f"✓ New best model saved! Epoch {epoch+1}, RMSE: {current_rmse:.4f}")
+        
+        # 训练结束后绘制最终收敛图和站点对比图
+        plot_training_curves(
+            self.history,
+            save_path=os.path.join(self.output_dir, "final_training_curves.png")
+        )
+        
+        # 保存最终站点对比图
+        if valid_station_mask.sum() > 0:
+            pred_station_mean = pred_at_stations[0].mean(dim=0).cpu().numpy()
+            true_station_mean = true_vals[0].mean(dim=0).cpu().numpy()
+            plot_stations_vs_pred(
+                s_coords[0, valid_station_mask].cpu().numpy(),
+                true_station_mean,
+                pred_station_mean,
+                save_path=os.path.join(self.output_dir, "final_station_comparison.png")
+            )
+        
+        print(f"\n{'='*60}")
+        print(f"Training completed!")
+        print(f"Best model: Epoch {self.best_epoch+1}, RMSE: {self.best_rmse:.4f}")
+        print(f"Results saved to {self.output_dir}/")
+        print(f"{'='*60}")

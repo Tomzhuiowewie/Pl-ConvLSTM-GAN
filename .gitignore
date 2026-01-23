@@ -1,7 +1,33 @@
+# 数据文件
 /data/raw
 /data/interim
 /data/processed
 *.npy
 *.rar
-.DS_Store
+
+# 输出文件
 /output
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints

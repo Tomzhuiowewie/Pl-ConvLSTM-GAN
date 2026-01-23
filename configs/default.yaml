@@ -16,15 +16,15 @@ model:
 
 training:
   batch_size: 8            # 从2增加到8，提升训练稳定性
-  epochs: 100
-  learning_rate: 0.001     # 从0.0001增加到0.001，加快收敛
+  epochs: 500
+  learning_rate: 0.0005     # 从0.0001增加到0.001，加快收敛
   lambda_point: 1.0        # 站点监督损失权重（已平衡）
   lambda_conserve: 1.0     # 物理守恒损失权重
   lambda_smooth: 0.1       # 空间平滑损失权重
   lambda_temporal: 0.05    # 时间一致性损失权重
   grad_clip_norm: 0.5
-  scheduler_patience: 5
-  scheduler_factor: 0.5
+  scheduler_patience: 10
+  scheduler_factor: 0.7
 
 output:
   output_dir: "output"
