@@ -1,11 +1,13 @@
 # 默认配置文件
 data:
-  rain_lr_path: "data/processed/daily/fenhe_hydro_08-08_2021.npy"
+  rain_lr_path: "data/processed/daily/fenhe_hydro_08-08_2012-2021.npy"
   dem_path: "data/processed/static_features_1km/dem_1km.npy"
-  lucc_path: "data/processed/static_features_1km/lucc_1km.npy"
+  lucc_path: "data/processed/static_features_1km/lucc_1km_2012-2021.npy"
   meta_path: "data/raw/climate/meta.xlsx"
   rain_excel_path: "data/raw/climate/rain.xlsx"
   shp_path: "data/raw/FenheBasin/fenhe.shp"
+  start_year: 2012  # 数据起始年份
+  end_year: 2021    # 数据结束年份
 
 model:
   hidden_dims: [16, 32]
@@ -25,6 +27,12 @@ training:
   grad_clip_norm: 0.5
   scheduler_patience: 10
   scheduler_factor: 0.7
+  # 数据集划分
+  use_split: true          # 是否划分训练/验证/测试集
+  split_method: "year"     # 划分方法: "year"(按年份) 或 "random"(随机)
+  train_years: [2012, 2018]  # 训练集年份范围
+  val_years: [2019, 2020]    # 验证集年份范围
+  test_years: [2021, 2021]   # 测试集年份范围
 
 output:
   output_dir: "output"

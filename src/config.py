@@ -13,6 +13,8 @@ class DataConfig:
     meta_path: str = ""
     rain_excel_path: str = ""
     shp_path: str = ""
+    start_year: int = 2012
+    end_year: int = 2021
 
 
 @dataclass
@@ -38,6 +40,12 @@ class TrainingConfig:
     grad_clip_norm: float = 0.5
     scheduler_patience: int = 5
     scheduler_factor: float = 0.5
+    # 数据集划分
+    use_split: bool = True  # 是否划分数据集
+    split_method: str = "year"  # "year" 或 "random"
+    train_years: List[int] = field(default_factory=lambda: [2012, 2018])
+    val_years: List[int] = field(default_factory=lambda: [2019, 2020])
+    test_years: List[int] = field(default_factory=lambda: [2021, 2021])
 
 
 @dataclass

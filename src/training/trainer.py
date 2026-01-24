@@ -5,6 +5,7 @@ import numpy as np
 import os
 
 from src.datasets.fenhe_dataset import FenheDataset
+from src.datasets.fenhe_dataset_split import split_dataset_by_year, split_dataset_random
 from src.losses.combined_loss import CombinedLoss
 from src.models.generator import Generator
 from src.utils.visualization import plot_stations_vs_pred, plot_training_curves
@@ -43,25 +44,85 @@ class Trainer:
         
     def setup_data(self):
         """设置数据集和数据加载器"""
-        dataset = FenheDataset(
+        # 创建完整数据集
+        full_dataset = FenheDataset(
             rain_lr_path=self.config.data.rain_lr_path,
             dem_path=self.config.data.dem_path,
             lucc_path=self.config.data.lucc_path,
             rain_meta_path=self.config.data.meta_path,
             rain_station_path=self.config.data.rain_excel_path,
             shp_path=self.config.data.shp_path,
-            T=self.config.model.T
+            T=self.config.model.T,
+            start_year=self.config.data.start_year,
+            end_year=self.config.data.end_year
         )
-        self.dataloader = DataLoader(
-            dataset, 
-            batch_size=self.config.training.batch_size, 
-            shuffle=True
-        )
-        return dataset
+        
+        # 判断是否需要划分数据集
+        if self.config.training.use_split:
+            print(f"\n使用 {self.config.training.split_method} 方法划分数据集...")
+            
+            if self.config.training.split_method == "year":
+                # 按年份划分
+                train_dataset, val_dataset, test_dataset = split_dataset_by_year(
+                    full_dataset,
+                    train_years=tuple(self.config.training.train_years),
+                    val_years=tuple(self.config.training.val_years),
+                    test_years=tuple(self.config.training.test_years)
+                )
+            else:
+                # 随机划分
+                train_dataset, val_dataset, test_dataset = split_dataset_random(
+                    full_dataset,
+                    train_ratio=0.7,
+                    val_ratio=0.15,
+                    test_ratio=0.15
+                )
+            
+            # 创建数据加载器
+            self.train_loader = DataLoader(
+                train_dataset, 
+                batch_size=self.config.training.batch_size, 
+                shuffle=True
+            )
+            self.val_loader = DataLoader(
+                val_dataset,
+                batch_size=self.config.training.batch_size,
+                shuffle=False
+            )
+            self.test_loader = DataLoader(
+                test_dataset,
+                batch_size=self.config.training.batch_size,
+                shuffle=False
+            )
+            
+            # 保持向后兼容
+            self.dataloader = self.train_loader
+            
+            print(f"训练集: {len(train_dataset)} 样本")
+            print(f"验证集: {len(val_dataset)} 样本")
+            print(f"测试集: {len(test_dataset)} 样本\n")
+            
+        else:
+            # 不划分，使用全部数据训练
+            print("\n使用全部数据进行训练（未划分数据集）\n")
+            self.dataloader = DataLoader(
+                full_dataset, 
+                batch_size=self.config.training.batch_size, 
+                shuffle=True
+            )
+            self.train_loader = self.dataloader
+            self.val_loader = None
+            self.test_loader = None
+        
+        return full_dataset
         
     def setup_model(self, dataset):
         """设置模型、优化器和损失函数"""
-        num_lu_classes = dataset.lucc_onehot.shape[0]
+        # 获取LUCC通道数（兼容单年和多年数据）
+        if hasattr(dataset, 'is_multiyear_lucc') and dataset.is_multiyear_lucc:
+            num_lu_classes = dataset.lucc_onehot_list[0].shape[0]
+        else:
+            num_lu_classes = dataset.lucc_onehot.shape[0]
         
         # 准备模型参数
         model_kwargs = {
@@ -98,6 +159,49 @@ class Trainer:
             lambda_temporal=self.config.training.lambda_temporal
         )
         
+    def validate(self):
+        """在验证集上评估模型"""
+        if self.val_loader is None:
+            return None
+        
+        self.model.eval()
+        val_losses = []
+        val_rmses = []
+        
+        with torch.no_grad():
+            for lr, dem, lu, s_coords, s_values in self.val_loader:
+                lr, dem, lu = lr.to(self.device), dem.to(self.device), lu.to(self.device)
+                s_values, s_coords = s_values.to(self.device), s_coords.to(self.device)
+                
+                # 前向传播
+                forward_kwargs = {}
+                if hasattr(self.config.model, 'input_grid_size') and self.config.model.input_grid_size:
+                    forward_kwargs['input_grid_size'] = tuple(self.config.model.input_grid_size)
+                
+                fake_hr = self.model(lr, dem, lu, **forward_kwargs)
+                
+                # 计算缩放因子
+                _, _, _, H_lr, W_lr = lr.shape
+                _, _, _, H_hr, W_hr = fake_hr.shape
+                scale_factor = H_hr / H_lr
+                
+                # 计算损失
+                loss, _ = self.loss_module(fake_hr, lr, s_coords, s_values, scale_factor)
+                val_losses.append(loss.item())
+                
+                # 计算RMSE
+                batch_rmse, _, _, _, _ = self.compute_station_rmse(
+                    fake_hr, s_coords, s_values, scale_factor
+                )
+                val_rmses.append(batch_rmse.item())
+        
+        self.model.train()
+        
+        return {
+            'loss': np.mean(val_losses),
+            'rmse': np.mean(val_rmses)
+        }
+    
     def compute_station_rmse(self, fake_hr, s_coords, s_values, scale_factor=1.0):
         """计算站点RMSE"""
         B, T, C, H, W = fake_hr.shape
@@ -149,6 +253,7 @@ class Trainer:
         
     def train_epoch(self, epoch, T):
         """训练一个epoch"""
+        self.model.train()
         all_batch_rmse = []
         epoch_losses = {
             'total': [],
@@ -158,7 +263,7 @@ class Trainer:
             'temporal': []
         }
         
-        for i, (lr, dem, lu, s_coords, s_values) in enumerate(self.dataloader):
+        for i, (lr, dem, lu, s_coords, s_values) in enumerate(self.train_loader):
             lr, dem, lu = lr.to(self.device), dem.to(self.device), lu.to(self.device)
             s_values, s_coords = s_values.to(self.device), s_coords.to(self.device)
             
@@ -234,8 +339,16 @@ class Trainer:
             self.history['rmse'].append(np.mean(all_batch_rmse))
             self.history['learning_rate'].append(self.optimizer.param_groups[0]['lr'])
             
-            print(f"Epoch {epoch} finished. Avg Batch RMSE: {np.mean(all_batch_rmse):.4f}")
-            self.scheduler.step(np.mean(all_batch_rmse))
+            # 验证
+            val_metrics = self.validate()
+            if val_metrics:
+                print(f"Epoch {epoch} | Train RMSE: {np.mean(all_batch_rmse):.4f} | "
+                      f"Val Loss: {val_metrics['loss']:.4f} | Val RMSE: {val_metrics['rmse']:.4f}")
+                # 使用验证RMSE进行学习率调整
+                self.scheduler.step(val_metrics['rmse'])
+            else:
+                print(f"Epoch {epoch} finished. Avg Batch RMSE: {np.mean(all_batch_rmse):.4f}")
+                self.scheduler.step(np.mean(all_batch_rmse))
             
             # 每10个epoch绘制一次收敛曲线
             if (epoch + 1) % 10 == 0:
@@ -244,8 +357,12 @@ class Trainer:
                     save_path=os.path.join(self.output_dir, "training_curves.png")
                 )
             
-            # 只保存最佳模型
-            current_rmse = np.mean(all_batch_rmse)
+            # 只保存最佳模型（优先使用验证集RMSE）
+            if val_metrics:
+                current_rmse = val_metrics['rmse']
+            else:
+                current_rmse = np.mean(all_batch_rmse)
+            
             if current_rmse < self.best_rmse:
                 self.best_rmse = current_rmse
                 self.best_epoch = epoch
