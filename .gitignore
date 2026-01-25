@@ -31,3 +31,6 @@ Thumbs.db
 
 # Jupyter Notebook
 .ipynb_checkpoints
+__pycache__/
+*.pyc
+output_*/
