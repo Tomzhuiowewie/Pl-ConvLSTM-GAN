@@ -13,13 +13,9 @@ from src.config import Config, load_config
 
 
 class Trainer:
-    def __init__(self, config=None, config_name="default"):
-        if config is None:
-            self.config = load_config(config_name)
-        else:
-            self.config = config
-        
-        # 设备
+    def __init__(self, config_name="default"):
+        # 加载配置、设备
+        self.config = load_config(config_name)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # 创建输出目录
