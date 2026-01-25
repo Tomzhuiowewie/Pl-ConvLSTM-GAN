@@ -9,6 +9,7 @@ from src.datasets.fenhe_dataset_split import split_dataset_by_year, split_datase
 from src.losses.enhanced_loss import EnhancedCombinedLoss
 from src.models.generator import Generator
 from src.utils.visualization import plot_stations_vs_pred, plot_training_curves
+from src.utils.early_stopping import EarlyStopping
 from src.config_enhanced import EnhancedConfig, load_enhanced_config
 
 
@@ -49,6 +50,9 @@ class EnhancedTrainer:
         # 追踪最佳模型
         self.best_rmse = float('inf')
         self.best_epoch = -1
+        
+        # 早停机制
+        self.early_stopping = None
         
     def setup_data(self):
         """设置数据集和数据加载器"""
@@ -359,6 +363,17 @@ class EnhancedTrainer:
         dataset = self.setup_data()
         self.setup_model(dataset)
         
+        # 初始化早停机制
+        if self.config.training.use_early_stopping:
+            self.early_stopping = EarlyStopping(
+                patience=self.config.training.early_stopping_patience,
+                min_delta=self.config.training.early_stopping_min_delta,
+                mode='min',
+                verbose=True
+            )
+            print(f"\n早停机制已启用: patience={self.config.training.early_stopping_patience}, "
+                  f"min_delta={self.config.training.early_stopping_min_delta}\n")
+        
         T = self.config.model.T
         
         for epoch in range(self.config.training.epochs):
@@ -396,32 +411,64 @@ class EnhancedTrainer:
                     save_path=os.path.join(self.output_dir, "training_curves.png")
                 )
             
-            # 只保存最佳模型
+            # 早停检查和模型保存
             if val_metrics:
                 current_rmse = val_metrics['rmse']
             else:
                 current_rmse = np.mean(all_batch_rmse)
             
-            if current_rmse < self.best_rmse:
-                self.best_rmse = current_rmse
-                self.best_epoch = epoch
+            # 使用早停机制
+            if self.early_stopping is not None:
+                is_best = self.early_stopping(current_rmse, epoch)
                 
-                # 删除旧的最佳模型
-                old_best_path = os.path.join(self.output_dir, "best_model.pth")
-                if os.path.exists(old_best_path):
-                    os.remove(old_best_path)
+                # 如果是最佳模型，保存
+                if is_best:
+                    self.best_rmse = current_rmse
+                    self.best_epoch = epoch
+                    
+                    # 删除旧的最佳模型
+                    old_best_path = os.path.join(self.output_dir, "best_model.pth")
+                    if os.path.exists(old_best_path):
+                        os.remove(old_best_path)
+                    
+                    # 保存新的最佳模型
+                    best_model_path = os.path.join(self.output_dir, "best_model.pth")
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': self.model.state_dict(),
+                        'optimizer_state_dict': self.optimizer.state_dict(),
+                        'scheduler_state_dict': self.scheduler.state_dict(),
+                        'rmse': current_rmse,
+                        'history': self.history
+                    }, best_model_path)
+                    print(f"✓ New best model saved! Epoch {epoch+1}, RMSE: {current_rmse:.4f}")
                 
-                # 保存新的最佳模型
-                best_model_path = os.path.join(self.output_dir, "best_model.pth")
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
-                    'scheduler_state_dict': self.scheduler.state_dict(),
-                    'rmse': current_rmse,
-                    'history': self.history
-                }, best_model_path)
-                print(f"✓ New best model saved! Epoch {epoch+1}, RMSE: {current_rmse:.4f}")
+                # 检查是否应该早停
+                if self.early_stopping.early_stop:
+                    print(f"\n早停触发，训练在 Epoch {epoch+1} 提前结束")
+                    break
+            else:
+                # 不使用早停时的原有逻辑
+                if current_rmse < self.best_rmse:
+                    self.best_rmse = current_rmse
+                    self.best_epoch = epoch
+                    
+                    # 删除旧的最佳模型
+                    old_best_path = os.path.join(self.output_dir, "best_model.pth")
+                    if os.path.exists(old_best_path):
+                        os.remove(old_best_path)
+                    
+                    # 保存新的最佳模型
+                    best_model_path = os.path.join(self.output_dir, "best_model.pth")
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': self.model.state_dict(),
+                        'optimizer_state_dict': self.optimizer.state_dict(),
+                        'scheduler_state_dict': self.scheduler.state_dict(),
+                        'rmse': current_rmse,
+                        'history': self.history
+                    }, best_model_path)
+                    print(f"✓ New best model saved! Epoch {epoch+1}, RMSE: {current_rmse:.4f}")
         
         # 训练结束后绘制最终收敛图和站点对比图
         plot_training_curves(

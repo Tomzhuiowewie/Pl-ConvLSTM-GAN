@@ -55,6 +55,11 @@ class EnhancedTrainingConfig:
     scheduler_patience: int = 5
     scheduler_factor: float = 0.5
     
+    # 早停参数
+    use_early_stopping: bool = True
+    early_stopping_patience: int = 20
+    early_stopping_min_delta: float = 0.0
+    
     # 数据集划分
     use_split: bool = True
     split_method: str = "year"

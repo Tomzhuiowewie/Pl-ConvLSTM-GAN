@@ -42,6 +42,11 @@ training:
   scheduler_patience: 10
   scheduler_factor: 0.7
   
+  # ========== 早停参数 ==========
+  use_early_stopping: true        # 是否启用早停
+  early_stopping_patience: 20     # 容忍多少个epoch验证集性能不提升
+  early_stopping_min_delta: 0.0   # 最小改进阈值
+  
   # 数据集划分
   use_split: true
   split_method: "year"
