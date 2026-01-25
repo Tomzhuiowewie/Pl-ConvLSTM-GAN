@@ -17,7 +17,7 @@ model:
   # input_grid_size: [25000, 25000]  # 输入网格尺寸（米）
 
 training:
-  batch_size: 8            # 从2增加到8，提升训练稳定性
+  batch_size: 16            # 从2增加到8，提升训练稳定性
   epochs: 500
   learning_rate: 0.0005     # 从0.0001增加到0.001，加快收敛
   lambda_point: 1.0        # 站点监督损失权重（已平衡）
