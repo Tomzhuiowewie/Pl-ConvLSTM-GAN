@@ -1,3 +1,9 @@
+"""
+主程序
+author: zhuhao
+version: 2.0
+date: 2025-01-25
+"""
 import argparse
 from src.training.trainer import Trainer
 
