@@ -1,0 +1,56 @@
+# 增强版配置文件 - 方案1+3
+# 在原有基础上添加物理约束和统计匹配损失
+
+data:
+  rain_lr_path: "data/processed/daily/fenhe_hydro_08-08_2012-2021.npy"
+  dem_path: "data/processed/static_features_1km/dem_1km.npy"
+  lucc_path: "data/processed/static_features_1km/lucc_1km_2012-2021.npy"
+  meta_path: "data/raw/climate/meta.xlsx"
+  rain_excel_path: "data/raw/climate/rain.xlsx"
+  shp_path: "data/raw/FenheBasin/fenhe.shp"
+  start_year: 2012
+  end_year: 2021
+
+model:
+  hidden_dims: [16, 32]
+  T: 5
+  scale_factor: 8
+
+training:
+  batch_size: 8
+  epochs: 500
+  learning_rate: 0.0005
+  
+  # ========== 原有损失权重 ==========
+  lambda_point: 1.0           # 站点监督损失
+  lambda_conserve: 1.0        # 物理守恒损失
+  lambda_smooth: 0.1          # 空间平滑损失
+  lambda_temporal: 0.05       # 时间一致性损失
+  
+  # ========== 方案1: 物理约束损失 ==========
+  lambda_terrain: 0.5         # 地形-降水关系约束
+  lambda_variability: 0.2     # 空间变异性约束
+  lambda_extreme: 0.3         # 极端值分布约束
+  
+  # ========== 方案3: 统计匹配损失 ==========
+  lambda_distribution: 0.4    # 概率分布匹配
+  lambda_correlation: 0.2     # 空间相关性匹配
+  lambda_spectrum: 0.0        # 频谱匹配（可选，默认关闭）
+  
+  # ========== 其他训练参数 ==========
+  grad_clip_norm: 0.5
+  scheduler_patience: 10
+  scheduler_factor: 0.7
+  
+  # 数据集划分
+  use_split: true
+  split_method: "year"
+  train_years: [2012, 2018]
+  val_years: [2019, 2020]
+  test_years: [2021, 2021]
+
+output:
+  output_dir: "output_enhanced"  # 使用独立目录，避免与原版冲突
+  log_interval: 10
+  save_model_interval: 10
+  plot_dpi: 300
