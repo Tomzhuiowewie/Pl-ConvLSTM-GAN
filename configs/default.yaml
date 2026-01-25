@@ -27,6 +27,9 @@ training:
   grad_clip_norm: 0.5
   scheduler_patience: 10
   scheduler_factor: 0.7
+  # 样本不平衡处理
+  use_weighted_loss: true  # 是否使用加权损失(处理样本不平衡)
+  weight_strategy: "log"   # 权重策略: "log"(对数加权), "stratified"(分层加权), "sqrt"(平方根加权)
   # 数据集划分
   use_split: true          # 是否划分训练/验证/测试集
   split_method: "year"     # 划分方法: "year"(按年份) 或 "random"(随机)

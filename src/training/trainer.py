@@ -148,12 +148,20 @@ class Trainer:
             patience=self.config.training.scheduler_patience
         )
         
+        # 获取加权损失配置(如果不存在则使用默认值)
+        use_weighted_loss = getattr(self.config.training, 'use_weighted_loss', True)
+        weight_strategy = getattr(self.config.training, 'weight_strategy', 'log')
+        
         self.loss_module = CombinedLoss(
             lambda_point=self.config.training.lambda_point, 
             lambda_conserve=self.config.training.lambda_conserve,
             lambda_smooth=self.config.training.lambda_smooth,
-            lambda_temporal=self.config.training.lambda_temporal
+            lambda_temporal=self.config.training.lambda_temporal,
+            use_weighted_loss=use_weighted_loss,
+            weight_strategy=weight_strategy
         )
+        
+        print(f"损失函数配置: 加权损失={'启用' if use_weighted_loss else '禁用'}, 权重策略={weight_strategy}")
         
     def validate(self):
         """在验证集上评估模型"""

@@ -4,14 +4,60 @@ import torch.nn.functional as F
 
 
 class CombinedLoss(nn.Module):
-    def __init__(self, lambda_point=1.0, lambda_conserve=1.0, lambda_smooth=0.1, lambda_temporal=0.05):
+    def __init__(self, lambda_point=1.0, lambda_conserve=1.0, lambda_smooth=0.1, lambda_temporal=0.05, 
+                 use_weighted_loss=True, weight_strategy='log'):
         super().__init__()
         self.lambda_point = lambda_point    # 站点监督损失权重
         self.lambda_conserve = lambda_conserve  # 物理守恒损失权重
         self.lambda_smooth = lambda_smooth    # 空间平滑损失权重
         self.lambda_temporal = lambda_temporal  # 时间一致性损失权重
         self.l1 = nn.L1Loss()
+        
+        # 样本不平衡处理参数
+        self.use_weighted_loss = use_weighted_loss  # 是否使用加权损失
+        self.weight_strategy = weight_strategy      # 权重策略: 'log', 'stratified', 'sqrt'
 
+    # ---------------------------------------------
+    # 计算样本权重(处理样本不平衡)
+    # ---------------------------------------------
+    def compute_sample_weights(self, rain_values):
+        """
+        根据降水强度计算样本权重
+        
+        Args:
+            rain_values: 降水观测值 (任意shape的tensor)
+        
+        Returns:
+            weights: 与rain_values相同shape的权重tensor
+        """
+        if not self.use_weighted_loss:
+            return torch.ones_like(rain_values)
+        
+        if self.weight_strategy == 'log':
+            # 对数加权: weight = 1 + log(1 + rain)
+            # 小雨(0-10mm): 权重 1.0-2.4
+            # 中雨(10-25mm): 权重 2.4-3.3
+            # 大雨(25-50mm): 权重 3.3-3.9
+            # 暴雨(>50mm): 权重 >3.9
+            weights = 1.0 + torch.log1p(rain_values)
+            
+        elif self.weight_strategy == 'stratified':
+            # 分层加权: 根据降水等级设置固定权重
+            weights = torch.ones_like(rain_values)
+            weights = torch.where(rain_values >= 10, torch.tensor(2.0, device=rain_values.device), weights)  # 中雨: 2倍
+            weights = torch.where(rain_values >= 25, torch.tensor(3.0, device=rain_values.device), weights)  # 大雨: 3倍
+            weights = torch.where(rain_values >= 50, torch.tensor(5.0, device=rain_values.device), weights)  # 暴雨: 5倍
+            
+        elif self.weight_strategy == 'sqrt':
+            # 平方根加权: weight = 1 + sqrt(rain)
+            # 比log加权更温和
+            weights = 1.0 + torch.sqrt(rain_values)
+            
+        else:
+            weights = torch.ones_like(rain_values)
+        
+        return weights
+    
     # ---------------------------------------------
     # 物理守恒损失
     # ---------------------------------------------
@@ -81,10 +127,18 @@ class CombinedLoss(nn.Module):
         if valid_mask.sum() == 0:
             return torch.tensor(0.0, device=pred.device)
         
-        # 使用 L1 损失（与守恒损失一致）
-        loss = F.l1_loss(pred_at_stations[valid_mask], obs_at_stations[valid_mask])
+        # 计算样本权重(根据降水强度)
+        weights = self.compute_sample_weights(obs_at_stations[valid_mask])
         
-        return loss
+        # 使用加权 L1 损失
+        loss_per_sample = F.l1_loss(
+            pred_at_stations[valid_mask], 
+            obs_at_stations[valid_mask],
+            reduction='none'
+        )
+        weighted_loss = (loss_per_sample * weights).mean()
+        
+        return weighted_loss
 
     # ---------------------------------------------
     # 空间梯度损失（平滑性约束）

@@ -40,6 +40,9 @@ class TrainingConfig:
     grad_clip_norm: float = 0.5
     scheduler_patience: int = 5
     scheduler_factor: float = 0.5
+    # 样本不平衡处理
+    use_weighted_loss: bool = True  # 是否使用加权损失
+    weight_strategy: str = "log"  # 权重策略: "log", "stratified", "sqrt"
     # 数据集划分
     use_split: bool = True  # 是否划分数据集
     split_method: str = "year"  # "year" 或 "random"
