@@ -30,6 +30,10 @@ training:
   # 样本不平衡处理
   use_weighted_loss: true  # 是否使用加权损失(处理样本不平衡)
   weight_strategy: "log"   # 权重策略: "log"(对数加权), "stratified"(分层加权), "sqrt"(平方根加权)
+  # 早停机制
+  use_early_stopping: true  # 是否使用早停
+  early_stopping_patience: 20  # 容忍多少个epoch验证集性能不提升
+  early_stopping_min_delta: 0.0001  # 最小改进阈值(RMSE)
   # 数据集划分
   use_split: true          # 是否划分训练/验证/测试集
   split_method: "year"     # 划分方法: "year"(按年份) 或 "random"(随机)

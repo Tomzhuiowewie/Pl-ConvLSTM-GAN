@@ -9,6 +9,7 @@ from src.datasets.fenhe_dataset_split import split_dataset_by_year, split_datase
 from src.losses.combined_loss import CombinedLoss
 from src.models.generator import Generator
 from src.utils.visualization import plot_stations_vs_pred, plot_training_curves
+from src.utils.early_stopping import EarlyStopping
 from src.config import Config, load_config
 
 
@@ -37,6 +38,21 @@ class Trainer:
         # 追踪最佳模型
         self.best_rmse = float('inf')
         self.best_epoch = -1
+        
+        # 早停机制
+        self.early_stopping = None
+        if getattr(self.config.training, 'use_early_stopping', False):
+            patience = getattr(self.config.training, 'early_stopping_patience', 20)
+            min_delta = getattr(self.config.training, 'early_stopping_min_delta', 0.0001)
+            self.early_stopping = EarlyStopping(
+                patience=patience,
+                min_delta=min_delta,
+                mode='min',  # RMSE越小越好
+                verbose=True
+            )
+            print(f"早停机制: 启用 (patience={patience}, min_delta={min_delta})")
+        else:
+            print("早停机制: 禁用")
         
     def setup_data(self):
         """设置数据集和数据加载器"""
@@ -367,10 +383,23 @@ class Trainer:
             else:
                 current_rmse = np.mean(all_batch_rmse)
             
-            if current_rmse < self.best_rmse:
-                self.best_rmse = current_rmse
-                self.best_epoch = epoch
-                
+            # 早停检查
+            should_save = False
+            if self.early_stopping is not None:
+                is_best = self.early_stopping(current_rmse, epoch)
+                if is_best:
+                    should_save = True
+                    self.best_rmse = current_rmse
+                    self.best_epoch = epoch
+            else:
+                # 如果没有早停,使用传统方式判断
+                if current_rmse < self.best_rmse:
+                    should_save = True
+                    self.best_rmse = current_rmse
+                    self.best_epoch = epoch
+            
+            # 保存最佳模型
+            if should_save:
                 # 删除旧的最佳模型
                 old_best_path = os.path.join(self.output_dir, "best_model.pth")
                 if os.path.exists(old_best_path):
@@ -387,6 +416,14 @@ class Trainer:
                     'history': self.history
                 }, best_model_path)
                 print(f"✓ New best model saved! Epoch {epoch+1}, RMSE: {current_rmse:.4f}")
+            
+            # 检查是否应该早停
+            if self.early_stopping is not None and self.early_stopping.early_stop:
+                print(f"\n{'='*60}")
+                print(f"早停触发! 在第 {epoch+1} 个epoch停止训练")
+                print(f"最佳模型: Epoch {self.best_epoch+1}, RMSE: {self.best_rmse:.4f}")
+                print(f"{'='*60}\n")
+                break
         
         # 训练结束后绘制最终收敛图和站点对比图
         plot_training_curves(

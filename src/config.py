@@ -43,6 +43,10 @@ class TrainingConfig:
     # 样本不平衡处理
     use_weighted_loss: bool = True  # 是否使用加权损失
     weight_strategy: str = "log"  # 权重策略: "log", "stratified", "sqrt"
+    # 早停机制
+    use_early_stopping: bool = True  # 是否使用早停
+    early_stopping_patience: int = 20  # 容忍多少个epoch验证集性能不提升
+    early_stopping_min_delta: float = 0.0001  # 最小改进阈值
     # 数据集划分
     use_split: bool = True  # 是否划分数据集
     split_method: str = "year"  # "year" 或 "random"
